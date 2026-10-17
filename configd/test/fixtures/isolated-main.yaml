@@ -1,0 +1,17 @@
+mixed-port: 17890
+allow-lan: false
+mode: rule
+log-level: warning
+proxy-providers:
+  FixtureInline:
+    type: inline
+    payload:
+      - name: Fixture Direct
+        type: direct
+proxy-groups:
+  - name: Fixture Select
+    type: select
+    use:
+      - FixtureInline
+rules:
+  - MATCH,DIRECT

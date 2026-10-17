@@ -1,0 +1,16 @@
+# Initial development source only; no network takeover or credentials.
+mixed-port: 17890
+allow-lan: false
+bind-address: 127.0.0.1
+external-controller: 127.0.0.1:19090
+mode: rule
+log-level: info
+ipv6: false
+tun:
+  enable: false
+dns:
+  enable: false
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT

@@ -1,0 +1,23 @@
+[Unit]
+Description=Mihomo Manager Core
+After=network-online.target
+Wants=network-online.target
+PartOf=mihomo-manager.target
+
+[Service]
+Type=simple
+User=mihomo-manager
+Group=mihomo-manager
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+WorkingDirectory=/var/lib/mihomo-manager
+EnvironmentFile=/etc/mihomo-manager/manager.env
+ExecStart=/bin/sh /opt/mihomo-manager/app/deploy/debian/start-core.sh
+Restart=on-failure
+RestartSec=3
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=mihomo-manager.target

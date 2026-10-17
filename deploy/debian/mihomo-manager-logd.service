@@ -1,0 +1,20 @@
+[Unit]
+Description=Mihomo Manager Persistent Logs
+After=mihomo-manager-core.service
+PartOf=mihomo-manager.target
+
+[Service]
+Type=simple
+User=mihomo-manager
+Group=mihomo-manager
+WorkingDirectory=/opt/mihomo-manager/app/logd
+EnvironmentFile=/etc/mihomo-manager/manager.env
+ExecStart=/opt/mihomo-manager/node/bin/node dist/index.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=mihomo-manager.target

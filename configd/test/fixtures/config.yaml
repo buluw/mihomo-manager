@@ -1,0 +1,8 @@
+mixed-port: 17890
+external-controller: 127.0.0.1:19090
+mode: rule
+tun:
+  enable: false
+proxies: []
+rules:
+  - MATCH,DIRECT

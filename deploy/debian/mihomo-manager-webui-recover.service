@@ -1,0 +1,19 @@
+[Unit]
+Description=Mihomo Manager Interrupted Program Update Recovery
+After=mihomo-manager-configd.service mihomo-manager-logd.service mihomo-manager-sysinfo.service mihomo-manager-web.service
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/mihomo-manager/manager.env
+ExecStart=/usr/local/libexec/mihomo-manager-webui-control recover
+TimeoutStartSec=180
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/lock /opt/mihomo-manager /var/lib/mihomo-manager-webui-install
+ReadOnlyPaths=/opt/mihomo-manager/bin /opt/mihomo-manager/node
+
+[Install]
+WantedBy=mihomo-manager.target

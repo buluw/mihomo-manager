@@ -1,0 +1,5 @@
+proxies:
+  - name: Local Fixture Node
+    type: socks5
+    server: 192.0.2.10
+    port: 1080

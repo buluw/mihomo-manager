@@ -1,0 +1,8 @@
+[Unit]
+Description=Mihomo Manager
+Wants=mihomo-manager-core.service mihomo-manager-configd.service mihomo-manager-logd.service mihomo-manager-sysinfo.service mihomo-manager-web.service mihomo-manager-core-control.socket
+After=network-online.target
+Wants=mihomo-manager-webui-update.socket mihomo-manager-webui-recover.service
+
+[Install]
+WantedBy=multi-user.target

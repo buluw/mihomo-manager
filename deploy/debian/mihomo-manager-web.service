@@ -1,0 +1,23 @@
+[Unit]
+Description=Mihomo Manager Static UI and Same-Origin API
+After=mihomo-manager-configd.service mihomo-manager-logd.service mihomo-manager-sysinfo.service mihomo-manager-core.service
+PartOf=mihomo-manager.target
+
+[Service]
+Type=simple
+User=mihomo-manager
+Group=mihomo-manager
+RuntimeDirectory=mihomo-manager-web
+ExecStartPre=+/usr/bin/install -d -o mihomo-manager -g mihomo-manager -m 700 /run/mihomo-manager-web/body /run/mihomo-manager-web/proxy
+ExecStartPre=/usr/sbin/nginx -t -q -c /etc/mihomo-manager/nginx.conf
+ExecStart=/usr/sbin/nginx -c /etc/mihomo-manager/nginx.conf -g "daemon off;"
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGQUIT
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=mihomo-manager.target

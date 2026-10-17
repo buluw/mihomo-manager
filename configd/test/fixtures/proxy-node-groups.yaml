@@ -1,0 +1,17 @@
+proxy-providers:
+  provider_a:
+    type: inline
+    payload:
+      - { name: vless-lab-alpha, type: vless, server: 192.0.2.10, port: 443, uuid: 00000000-0000-4000-8000-000000000001 }
+      - { name: vmess-ws-lab-8443-alpha, type: vmess, server: edge.example.test, port: 8443, uuid: 00000000-0000-4000-8000-000000000001 }
+      - { name: vmess-ws-lab-2087-alpha, type: vmess, server: edge.example.test, port: 2087, uuid: 00000000-0000-4000-8000-000000000001 }
+      - { name: hysteria2-lab-alpha, type: hysteria2, server: 192.0.2.10, port: 8443, password: 00000000-0000-4000-8000-000000000001 }
+      - { name: tuic5-lab-alpha, type: tuic, server: 192.0.2.10, port: 10443, uuid: 00000000-0000-4000-8000-000000000001 }
+      - { name: anytls-lab-alpha, type: anytls, server: edge.example.test, port: 9443, password: 00000000-0000-4000-8000-000000000001 }
+      - { name: vless-reality-vision-isolated-beta, type: vless, server: 192.0.2.11, port: 443, uuid: 00000000-0000-4000-8000-000000000002 }
+      - { name: anytls-isolated-beta, type: anytls, server: 192.0.2.11, port: 9443, password: fixture-password-b }
+      - { name: subscription-node, type: trojan, server: 192.0.2.12, port: 443, password: fixture-password-b }
+  provider_b:
+    type: inline
+    payload:
+      - { name: vless-reality-vision-lab-alpha, type: vless, server: 192.0.2.20, port: 443, uuid: 00000000-0000-4000-8000-000000000001 }

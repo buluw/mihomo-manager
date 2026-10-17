@@ -1,0 +1,27 @@
+# Dependencies and generated output
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+/frontend/public/assets/monaco-editor/
+
+# Runtime data, credentials, and third-party binaries
+/runtime/
+/ssh/*
+!/ssh/AGENTS.md
+/core/bin/
+**/.env
+**/.env.*
+!**/.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Local editor and operating-system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

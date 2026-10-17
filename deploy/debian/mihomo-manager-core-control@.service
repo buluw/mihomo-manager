@@ -1,0 +1,17 @@
+[Unit]
+Description=Mihomo Manager Fixed Core Control
+
+[Service]
+Type=exec
+User=root
+EnvironmentFile=/etc/mihomo-manager/manager.env
+ExecStart=/usr/local/libexec/mihomo-manager-core-control
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+RuntimeMaxSec=270
+TimeoutStopSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/lock /opt/mihomo-manager/bin

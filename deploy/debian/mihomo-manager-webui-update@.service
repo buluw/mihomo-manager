@@ -1,0 +1,20 @@
+[Unit]
+Description=Mihomo Manager Independent Program Update
+
+[Service]
+Type=exec
+User=root
+EnvironmentFile=/etc/mihomo-manager/manager.env
+ExecStart=/usr/local/libexec/mihomo-manager-webui-control
+ExecStopPost=/usr/local/libexec/mihomo-manager-webui-control recover
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+RuntimeMaxSec=600
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/lock /opt/mihomo-manager /var/lib/mihomo-manager-webui-install
+ReadOnlyPaths=/opt/mihomo-manager/bin /opt/mihomo-manager/node

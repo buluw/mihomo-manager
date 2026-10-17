@@ -1,0 +1,20 @@
+[Unit]
+Description=Mihomo Manager Configuration Files
+After=network-online.target
+PartOf=mihomo-manager.target
+
+[Service]
+Type=simple
+User=mihomo-manager
+Group=mihomo-manager
+WorkingDirectory=/opt/mihomo-manager/app/configd
+EnvironmentFile=/etc/mihomo-manager/manager.env
+ExecStart=/opt/mihomo-manager/node/bin/node dist/index.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=mihomo-manager.target

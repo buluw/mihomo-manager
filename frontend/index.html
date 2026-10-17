@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <link id="app-favicon" rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      try {
+        const storageKey = 'mihomo-manager-theme'
+        const legacyStorageKey = 'mihomo-theme'
+        const isTheme = value => value === 'light' || value === 'dark' || value === 'system'
+        const saved = localStorage.getItem(storageKey)
+        const legacy = localStorage.getItem(legacyStorageKey)
+        const preference = isTheme(saved) ? saved : isTheme(legacy) ? legacy : 'system'
+        if (!isTheme(saved) && isTheme(legacy)) localStorage.setItem(storageKey, legacy)
+        const theme = preference === 'system'
+          ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : preference
+        document.documentElement.classList.add(theme)
+        document.documentElement.style.colorScheme = theme
+        document.getElementById('app-favicon').href = theme === 'dark' ? '/favicon-dark.svg' : '/favicon.svg'
+      } catch (_) {}
+    </script>
+    <meta name="theme-color" content="#0b0d10" />
+    <title>Mihomo Manager</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="/assets/monaco-editor/0.55.1/nls.messages.zh-cn.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

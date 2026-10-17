@@ -1,0 +1,15 @@
+[Unit]
+Description=Mihomo Manager Restricted Core Control Socket
+PartOf=mihomo-manager.target
+
+[Socket]
+ListenStream=/run/mihomo-manager-core-control.sock
+Accept=yes
+SocketUser=root
+SocketGroup=mihomo-manager
+SocketMode=0660
+RemoveOnStop=true
+MaxConnections=4
+
+[Install]
+WantedBy=mihomo-manager.target
