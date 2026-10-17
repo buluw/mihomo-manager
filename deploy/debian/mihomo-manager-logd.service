@@ -8,6 +8,7 @@ Type=simple
 User=mihomo-manager
 Group=mihomo-manager
 WorkingDirectory=/opt/mihomo-manager/app/logd
+Environment=NODE_OPTIONS=--max-semi-space-size=2
 EnvironmentFile=/etc/mihomo-manager/manager.env
 ExecStart=/opt/mihomo-manager/node/bin/node dist/index.js
 Restart=on-failure

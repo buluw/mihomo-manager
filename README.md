@@ -2,7 +2,7 @@
 
 基于 Linux 的 Mihomo Web UI 管理器。面向可信局域网中的单用户使用，将配置文件、订阅、代理集合、规则与运行状态放在同一个桌面／移动端界面中管理。
 
-管理器使用 Mihomo 原始 Controller API 处理运行操作，并以独立服务保存配置与管理器设置。当前正式版本为 **0.2.2**；[GitHub Releases](https://github.com/buluw/mihomo-manager/releases) 提供程序包、对应源码及 SHA256。具体源码身份与运行要求见包内 `RUNTIME_BUILD.json` 和 `SOURCE_METADATA.json`。
+管理器使用 Mihomo 原始 Controller API 处理运行操作，并以独立服务保存配置与管理器设置。当前正式版本为 **0.2.3**；[GitHub Releases](https://github.com/buluw/mihomo-manager/releases) 提供程序包、对应源码及 SHA256。具体源码身份与运行要求见包内 `RUNTIME_BUILD.json` 和 `SOURCE_METADATA.json`。
 
 ## 功能
 
@@ -28,7 +28,7 @@
 
 - [Linux 安装、目录与服务说明](docs/user/installation.md)
 - [配置、订阅与维护使用说明](docs/user/usage.md)
-- [0.2.2 发布说明](docs/user/release-notes.md)
+- [0.2.3 发布说明](docs/user/release-notes.md)
 - [源码导出与发行包构建](release/README.md)
 
 运行包包含前端和 configd、logd、sysinfo 三个管理服务的编译产物、必要依赖与部署文件。Node.js、Nginx 和 Mihomo Core 由宿主环境单独提供；运行包适用于已由本项目部署入口管理的环境，首次安装使用源码入口。
