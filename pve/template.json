@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "product": "mihomo-manager",
+  "status": "released",
+  "template": {
+    "url": "https://github.com/buluw/mihomo-manager/releases/download/pve-v0.2.3/mihomo-manager-pve-debian12-amd64-v0.2.3.tar.zst",
+    "bytes": 124621572,
+    "sha256": "4d85255e56bd55dc9cc5349c959c2d5ff8b7efdba218846f89c5ea9464e55adf",
+    "managerVersion": "0.2.3",
+    "architecture": "amd64",
+    "serviceUid": 999,
+    "serviceGid": 996
+  },
+  "environment": {
+    "url": "https://github.com/buluw/mihomo-manager/releases/download/pve-v0.2.3/mihomo-manager-pve-environment-v0.2.3.tar.gz",
+    "bytes": 46929288,
+    "sha256": "f37105b24ba61c300ac17ebe3f148c275adad4a9f2af976d470c767cf0bd08c4",
+    "managerVersion": "0.2.3"
+  }
+}

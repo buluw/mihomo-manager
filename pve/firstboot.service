@@ -1,0 +1,13 @@
+[Unit]
+Description=Mihomo Manager Container Initialization
+After=local-fs.target
+Before=mihomo-manager.target mihomo-manager-core.service mihomo-manager-configd.service mihomo-manager-logd.service mihomo-manager-sysinfo.service mihomo-manager-web.service ssh.service
+ConditionPathExists=!/etc/mihomo-manager/pve-initialized
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/mihomo-manager-firstboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -9,7 +9,11 @@ settings=/etc/mihomo-manager
 access_permissions=/etc/systemd/system/mihomo-manager-sysinfo.service.d/20-access-data.conf
 [[ $EUID == 0 && -f "$settings/deployment-owned" ]] || exit 2
 [[ $(realpath "$app") == "$app" && ! -L "$app" ]] || exit 2
-exec 9>/run/lock/mihomo-manager-deploy.lock
+if [[ ${MIHOMO_PVE_LOCKS:-} == 1 ]]; then
+    [[ $(readlink /proc/$$/fd/9) == /run/lock/mihomo-manager-deploy.lock ]] || exit 2
+else
+    exec 9>/run/lock/mihomo-manager-deploy.lock
+fi
 flock -n 9 || { echo 'Another deployment is running.' >&2; exit 1; }
 
 health() {
@@ -57,7 +61,11 @@ if [[ "$mode" == pack ]]; then
 fi
 
 [[ -f "$settings/runtime-only" ]] || { echo 'Target must remain runtime-only.' >&2; exit 2; }
-exec 8>/run/lock/mihomo-manager-core-control.lock
+if [[ ${MIHOMO_PVE_LOCKS:-} == 1 ]]; then
+    [[ $(readlink /proc/$$/fd/8) == /run/lock/mihomo-manager-core-control.lock ]] || exit 2
+else
+    exec 8>/run/lock/mihomo-manager-core-control.lock
+fi
 flock -n 8 || { echo 'A Core operation is running.' >&2; exit 1; }
 if [[ "$mode" == rollback ]]; then
     [[ "$work" =~ ^/root/mihomo-runtime-backup-[A-Za-z0-9]+$ && -d "$work/app" && -f "$work/deployment.tar.gz" && ! -e "$work/replaced-app" ]] || exit 2
