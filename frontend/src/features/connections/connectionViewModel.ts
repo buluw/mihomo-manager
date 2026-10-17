@@ -110,7 +110,7 @@ export const connectionColumnDefinitions: Record<
     minWidth: MIN_CONNECTION_DATA_COLUMN_WIDTH,
     sortKey: "upload",
   },
-  age: { label: "建立时间", width: 88, minWidth: MIN_CONNECTION_DATA_COLUMN_WIDTH, sortKey: "age" },
+  age: { label: "持续时间", width: 88, minWidth: MIN_CONNECTION_DATA_COLUMN_WIDTH, sortKey: "age" },
 }
 
 export const defaultConnectionColumnWidths = Object.fromEntries(

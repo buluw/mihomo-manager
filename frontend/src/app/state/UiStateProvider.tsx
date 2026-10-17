@@ -263,7 +263,7 @@ export function UiStateProvider({ children }: { children: ReactNode }) {
               ? "写入尚未完成"
               : "放弃未保存的修改？",
             message: pendingNavigation
-              ? "配置中心正在完成保存、更新或删除。请等待操作结果确定后再离开。"
+              ? "当前操作尚未完成，请等待结果确认后再离开。"
               : "当前页面的修改还没有保存，离开后将无法恢复。",
             confirmLabel: pendingNavigation ? "继续等待" : "放弃并离开",
             cancelLabel: pendingNavigation ? "" : "取消",

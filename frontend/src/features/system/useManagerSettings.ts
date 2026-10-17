@@ -11,11 +11,12 @@ import {
   type ManagerSettings,
   type RuntimeLoadState,
 } from "@/api/configClient";
-import { readCoreUpdate, readNetworkInterfaces, type HostNetworkInterface } from "@/api/systemClient";
+import { readNetworkInterfaces, type HostNetworkInterface } from "@/api/systemClient";
+import { controllerApi } from "@/api/controllerClient";
 import { useRegisterPageRefresh } from "@/app/pageRefresh";
 import { useDirtyGuard } from "@/hooks/useDirtyGuard";
 import { defaultDirectDelayTest, directDelayTestError, directDelayTestUrl } from "@/shared/directDelay";
-import { coreSettingsDefaults, sourceSettingsDocument } from "@/shared/managerSettingsSource";
+import { sourceSettingsDocument } from "@/shared/managerSettingsSource";
 import {
   applyRuntimeConfig,
   RuntimeApplyError,
@@ -36,7 +37,7 @@ import {
   settingsValuesEqual,
   type SettingGroup,
 } from "./managerSettingsValues";
-import { observeTun, outboundInterfaces, readTunRuntime, type TunObservation } from "./tunRecovery";
+import { observeTun, outboundInterfaces, tunRuntimeFromConfig, type TunObservation } from "./tunRecovery";
 import { assertManagerSettingsTarget, managerSettingsTarget } from "./managerSettingsTarget";
 
 export function useManagerSettings({ notify, onRefresh, coreVersion, coreBusy, onRecoverTun, onApplyingChange }: {
@@ -75,14 +76,14 @@ export function useManagerSettings({ notify, onRefresh, coreVersion, coreBusy, o
   const [source, setSource] = useState<{ snapshot: ConfigSnapshot; values: Record<string, unknown> } | null>(null)
   const [sourceError, setSourceError] = useState<string | null>(null)
   const [sourceLoading, setSourceLoading] = useState(false)
-  const [defaults, setDefaults] = useState<ManagerOverrides | null>(null)
-  const [defaultsLabel, setDefaultsLabel] = useState("正在核对 Core 默认值")
+  const [runtimeValues, setRuntimeValues] = useState<unknown>(null)
+  const [runtimeValuesLabel, setRuntimeValuesLabel] = useState("正在读取 Core 当前值")
   const [valueRefresh, setValueRefresh] = useState(0)
   const action = useRef(false)
   const draftRevision = useRef(0)
   const refreshRequest = useRef<AbortController | null>(null)
   const sourceReady = Boolean(sourceName && source?.snapshot.name === sourceName)
-  const projected = resolveSettingsValues(draft, sourceReady ? source!.values : {}, defaults)
+  const projected = resolveSettingsValues(draft, sourceReady ? source!.values : {}, runtimeValues)
   const form = projected.form
   const availableInterfaces = outboundInterfaces(interfaces)
   const selectedInterface = availableInterfaces.find((item) => item.name === form.interfaceName)
@@ -119,19 +120,6 @@ export function useManagerSettings({ notify, onRefresh, coreVersion, coreBusy, o
     setMessage("")
   }
 
-  useEffect(() => {
-    const request = new AbortController()
-    setDefaults(null)
-    setDefaultsLabel("正在核对 Core 默认值")
-    void readCoreUpdate(request.signal).then(value => {
-      if (request.signal.aborted) return
-      const verified = !coreVersion || coreVersion === value.current?.version ? coreSettingsDefaults(value.current) : null
-      setDefaults(verified)
-      setDefaultsLabel(verified ? `缺项采用已核实的 ${value.current!.version} 默认值` : "当前 Core 默认值未核实；缺项显示未知，可明确设置")
-    }, () => { if (!request.signal.aborted) setDefaultsLabel("无法核实 Core 默认值；缺项显示未知，可明确设置") })
-    return () => request.abort()
-  }, [coreVersion, valueRefresh])
-
   useDirtyGuard(dirty || directDelayDirty || fieldEditing, saving || savingDirectDelay)
 
   const refreshInterfaces = useCallback(async (waitMs = 0) => {
@@ -143,26 +131,32 @@ export function useManagerSettings({ notify, onRefresh, coreVersion, coreBusy, o
     setTun(null)
     setTunError(null)
     setTunMessage("")
+    setRuntimeValues(null)
+    setRuntimeValuesLabel("正在读取 Core 当前值")
     if (waitMs) await new Promise(resolve => setTimeout(resolve, waitMs))
     if (request.signal.aborted) return
-    const [listed, runtime] = await Promise.allSettled([readNetworkInterfaces(request.signal), readTunRuntime(request.signal)])
+    const [listed, runtime] = await Promise.allSettled([readNetworkInterfaces(request.signal), controllerApi("/configs", { signal: request.signal })])
     if (request.signal.aborted) return
+    setRuntimeValues(runtime.status === "fulfilled" ? runtime.value : null)
+    setRuntimeValuesLabel(runtime.status === "fulfilled" ? "当前值仅为 Controller 运行参考" : "Core 当前值读取失败；缺项继续跟随 Core")
     if (listed.status === "fulfilled") setInterfaces(listed.value)
     else {
       setInterfaces([])
       setInterfacesError("网卡列表读取失败，仍可手动填写网卡名称")
     }
     if (listed.status === "fulfilled" && runtime.status === "fulfilled") {
-      const observation = observeTun(runtime.value, listed.value, tunDevices.current)
-      tunDevices.current = [...new Set([observation.device, ...observation.remainingDevices])]
-      setTun(observation)
+      try {
+        const observation = observeTun(tunRuntimeFromConfig(runtime.value), listed.value, tunDevices.current)
+        tunDevices.current = [...new Set([observation.device, ...observation.remainingDevices])]
+        setTun(observation)
+      } catch { setTunError("TUN 运行状态无法确认，请重新读取") }
     } else setTunError("TUN 状态或网卡读取失败，无法确认设备是否释放；请重新读取")
     setInterfacesLoading(false)
   }, [])
   useEffect(() => {
     void refreshInterfaces()
     return () => tunRequest.current?.abort()
-  }, [refreshInterfaces])
+  }, [refreshInterfaces, coreVersion, valueRefresh])
   useEffect(() => { onApplyingChange(saving); return () => onApplyingChange(false) }, [saving, onApplyingChange])
 
   const recoverTun = async () => {
@@ -386,10 +380,10 @@ export function useManagerSettings({ notify, onRefresh, coreVersion, coreBusy, o
 
   return {
     sourceName, loading, saving, dirty, pendingApply, message, error, sourceLoading, sourceReady, sourceStatus, fieldEditing, setFieldEditing,
-    sourceError: loading ? null : sourceError || targetError, defaultsLabel, form, formError, disabled, availableInterfaces, selectedInterface,
+    sourceError: loading ? null : sourceError || targetError, runtimeValuesLabel, form, formError, disabled, availableInterfaces, selectedInterface,
     interfacesLoading, interfacesError, tun, tunError, tunMessage, directDelayDraft, directDelayDirty,
     directDelayValidation, directDelayDisabled, directDelayError, directDelayMessage, savingDirectDelay, patch,
     reset, refreshInterfaces, recoverTun, patchDirectDelay, saveDirectDelay, saveAndApply,
-    cancelChanges, cancelDirectDelay, isExplicit, categoryChanged, known: projected.known,
+    cancelChanges, cancelDirectDelay, isExplicit, categoryChanged, known: projected.known, valueStatus: projected.status,
   }
 }

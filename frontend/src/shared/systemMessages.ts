@@ -14,7 +14,7 @@ const updateErrors: Record<string, string> = {
   startup_failed_restored: "新版本未能启动，已自动恢复切换前的可用版本。",
   core_action_busy: "核心正在执行其他操作，请稍后重试。",
 };
-export const coreUpdateError = (code: string | null) => code ? updateErrors[code] ?? "核心更新未完成，请查看服务状态后重试；本地上一版本仍可用于回退。" : null;
+export const coreUpdateError = (code: string | null) => code ? updateErrors[code] ?? "核心更新未完成，请重新读取更新状态和核心服务状态后重试。" : null;
 
 const requestErrors: Record<string, string> = {
   resources_request_failed: "服务资源读取失败，将自动重试",

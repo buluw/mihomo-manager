@@ -831,7 +831,7 @@ export function useConfigWorkspace(notify: Notify, initialRuntimeView: RuntimeCo
   const renameFile = async (oldName: string, newName: string) => {
     if (unavailable || busy || mutation) return false
     if (runtime.stateRef.current?.lastSuccessful?.generated.sourceName === oldName) {
-      setCreateError("此配置正在使用，请先切换到其他配置")
+      setCreateError("此配置是最近成功加载来源，请先成功应用其他配置，再重命名或删除。")
       return false
     }
     const file = files.find((item) => item.name === oldName)
@@ -888,7 +888,7 @@ export function useConfigWorkspace(notify: Notify, initialRuntimeView: RuntimeCo
   const removeFile = (name: string) => {
     if (busyRef.current || mutationRef.current) return
     if (runtime.stateRef.current?.lastSuccessful?.generated.sourceName === name) {
-      notify("此配置正在使用，请先切换到其他配置", "error")
+      notify("此配置是最近成功加载来源，请先成功应用其他配置，再重命名或删除。", "error")
       return
     }
     setDeleteTarget(files.find((item) => item.name === name) ?? null)
@@ -899,7 +899,7 @@ export function useConfigWorkspace(notify: Notify, initialRuntimeView: RuntimeCo
     const name = file.name
     if (files.find((item) => item.name === name)?.sha256 !== file.sha256) { notify("配置已变化，请重新打开删除预览", "error"); return }
     if (runtime.stateRef.current?.lastSuccessful?.generated.sourceName === name) {
-      notify("此配置正在使用，请先切换到其他配置", "error")
+      notify("此配置是最近成功加载来源，请先成功应用其他配置，再重命名或删除。", "error")
       return
     }
     const previousFiles = files

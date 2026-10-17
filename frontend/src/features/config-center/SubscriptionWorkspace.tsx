@@ -141,7 +141,7 @@ export function SubscriptionWorkspace({
                 <TriangleAlert />
                 <AlertTitle>订阅功能暂不可用</AlertTitle>
                 <AlertDescription>
-                  configd 未连接。Controller 页面不受影响。
+                  配置服务未连接。
                 </AlertDescription>
                 <AlertAction>
                   <Button
@@ -207,7 +207,7 @@ export function SubscriptionWorkspace({
         />
         <span className="truncate text-muted-foreground">
           {subscription.unavailable
-            ? "configd 不可用"
+            ? "配置服务不可用"
             : subscription.dirty
               ? "订阅设置有未保存更改"
               : subscription.busy === "load"

@@ -386,27 +386,23 @@ test("sniffer settings replace the selected protocol set and validate port range
   assert.deepEqual(managerOverridesFromForm({}, { ...form, snifferEnable: "disabled", sniffProtocols: [] }).sniffer?.sniff, {});
 });
 
-test("dashboard resolves modes from manager, confirmed runtime and verified defaults without source selection", async () => {
+test("dashboard resolves explicit modes from manager and confirmed file without source selection", async () => {
   const source = { name: "source.yaml", path: "/controlled/source.yaml", content: "mode: direct\n", sha256: "source-sha" };
-  const identity = { version: "v1.19.29", sha256: "bd2a08ae155b7dffc12a1bdf610ff5f17c45058414a1d2c562e28eb9309abff6" };
   let overrides: import("../src/api/configClient.ts").ManagerOverrides = {};
   let content = source.content;
   const deps = {
     settings: async () => ({ schemaVersion: 1 as const, version: 3, overrides }),
     applied: async () => ({ state: { schemaVersion: 1 as const, version: 0, lastAttempt: null, lastSuccessful: null }, content }),
-    core: async () => ({ phase: "idle" as const, busy: false, error: null, current: identity, previous: null, latest: null, candidate: null, source: null, route: null, bytes: 0, total: null }),
   };
-  assert.deepEqual(await readPersistentMode(identity.version, undefined, deps), { mode: "direct", pending: true });
+  assert.deepEqual(await readPersistentMode(undefined, deps), { mode: "direct", pending: true });
   overrides = { mode: "global" };
-  assert.equal((await readPersistentMode(identity.version, undefined, deps)).mode, "global");
+  assert.equal((await readPersistentMode(undefined, deps)).mode, "global");
   overrides = {}; content = "dns: {}\n";
-  assert.equal((await readPersistentMode(identity.version, undefined, deps)).mode, "rule");
-  assert.equal((await readPersistentMode("v9.0.0", undefined, deps)).mode, null);
-  assert.equal((await readPersistentMode(identity.version, undefined, { ...deps, core: async () => ({ ...await deps.core(), current: { ...identity, sha256: "custom" } }) })).mode, null);
+  assert.deepEqual(await readPersistentMode(undefined, deps), { mode: null, pending: true });
   content = "mode: invalid\n";
-  assert.equal((await readPersistentMode(identity.version, undefined, deps)).mode, null);
+  assert.equal((await readPersistentMode(undefined, deps)).mode, null);
   content = "mode: [\n";
-  await assert.rejects(readPersistentMode(identity.version, undefined, deps), /无法解析/);
+  await assert.rejects(readPersistentMode(undefined, deps), /无法解析/);
 });
 
 test("mode failure and lost recording never report complete configuration success", async () => {
@@ -487,16 +483,15 @@ test("lost mode confirmation retries the original identity and refresh explicitl
   }
 });
 
-test("dashboard omitted mode uses verified rule default for both selected and applied mode", async () => {
+test("dashboard omitted mode stays unconfirmed until a concrete mode is saved and applied", async () => {
   const f = fixture();
   const state = await applyRuntimeConfig(f.source, f.services);
-  const identity = { version: "v1.19.29", sha256: "bd2a08ae155b7dffc12a1bdf610ff5f17c45058414a1d2c562e28eb9309abff6" };
   const services = {
     settings: f.services.settings,
     applied: async () => ({ state, content: "dns: {}\n" }),
-    core: async () => ({ phase: "idle" as const, busy: false, error: null, current: identity, previous: null, latest: null, candidate: null, source: null, route: null, bytes: 0, total: null }),
   };
-  assert.deepEqual(await readPersistentMode(identity.version, undefined, services), { mode: "rule", pending: false });
-  assert.deepEqual(await readPersistentMode(identity.version, undefined, { ...services, settings: async () => ({ schemaVersion: 1, version: 4, overrides: { mode: "direct" } }) }), { mode: "direct", pending: true });
-  assert.deepEqual(await readPersistentMode("unverified", undefined, services), { mode: null, pending: true });
+  assert.deepEqual(await readPersistentMode(undefined, services), { mode: null, pending: true });
+  assert.deepEqual(await readPersistentMode(undefined, { ...services, settings: async () => ({ schemaVersion: 1, version: 4, overrides: { mode: "direct" } }) }), { mode: "direct", pending: true });
+  const explicit = { ...state, lastSuccessful: { ...state.lastSuccessful!, generated: { ...state.lastSuccessful!.generated, mode: "direct" as const } } };
+  assert.deepEqual(await readPersistentMode(undefined, { ...services, settings: async () => ({ schemaVersion: 1, version: 4, overrides: { mode: "direct" } }), applied: async () => ({ state: explicit, content: "mode: direct\n" }) }), { mode: "direct", pending: false });
 });

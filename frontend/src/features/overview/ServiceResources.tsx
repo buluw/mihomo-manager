@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { formatBytes } from "@/shared/format"
 
-const serviceNames = { core: "Mihomo Core", configd: "配置服务", logd: "日志服务", sysinfo: "系统信息服务", web: "静态站点" }
+const serviceNames = { core: "Mihomo Core", configd: "配置服务", logd: "日志服务", sysinfo: "系统管理服务", web: "网页服务" }
 const states = { active: "已启动", inactive: "已停止", activating: "启动中", deactivating: "停止中", failed: "失败", unknown: "未知" }
 const stateTones: Record<ProjectServiceResource["state"], StatusTone> = { active: "success", inactive: "neutral", activating: "info", deactivating: "info", failed: "error", unknown: "neutral" }
 const failures: Record<string, string> = {
@@ -20,7 +20,7 @@ const failures: Record<string, string> = {
   resources: "系统资源不足", "oom-kill": "内存不足，被系统终止", watchdog: "看门狗超时", protocol: "服务就绪协议失败", unknown: "系统未提供具体原因",
 }
 const memoryUnavailable = { "service-unavailable": "服务状态不可用", "not-running": "服务未运行", "not-accounted": "未启用内存计量", "not-reported": "系统未提供内存读数" }
-const diskNames = { program: "共享程序", data: "配置与数据", logs: "项目文件日志" }
+const diskNames = { program: "程序文件", data: "配置与数据", logs: "日志" }
 
 function failureReason(service: ProjectServiceResource) {
   if (!service.available) return "服务状态读取失败"
@@ -89,7 +89,7 @@ export function ServiceResources({ resources }: { resources: ReturnType<typeof u
     actions={<><Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="资源统计口径" />}><CircleHelp /></TooltipTrigger><TooltipContent className="max-w-sm flex-col items-start">
       <p>本容器内存由 LXCFS 提供：额度取容器可用上限，已用为额度减可用内存，可回收缓存计入可用。覆盖整个容器，与服务内存不相加。</p>
       <p>服务内存来自 systemd，包含子进程及计入服务组的缓存，与 Controller 自报内存口径不同。</p>
-      <p>磁盘按实际分配空间统计：共享程序含依赖、Core 和上一版本；配置与数据含源配置、运行文件及缓存；项目日志单列，不含主机共享 journal。三个范围不重叠。</p>
+      <p>按实际分配空间统计。程序文件含依赖、Core 及上一版本；配置与数据含源配置、运行文件及缓存；日志单独统计，不含系统 journal。三类互不重复。</p>
     </TooltipContent></Tooltip><Button variant="ghost" size="icon-sm" aria-label="刷新服务资源" disabled={loading} onClick={refresh}>
       {loading ? <Spinner /> : <RefreshCw />}
     </Button></>}>
@@ -116,8 +116,8 @@ export function ServiceResources({ resources }: { resources: ReturnType<typeof u
             </TableRow>
           })}</TableBody>
         </Table>
-        <Table aria-label="共享磁盘占用" className="[&_th]:h-8 [&_th:first-child]:pl-0 [&_td:first-child]:pl-0 [&_th:last-child]:pr-0 [&_td:last-child]:pr-0">
-          <TableHeader><TableRow><TableHead>共享磁盘占用</TableHead><TableHead className="text-right">占用空间</TableHead></TableRow></TableHeader>
+        <Table aria-label="磁盘占用" className="[&_th]:h-8 [&_th:first-child]:pl-0 [&_td:first-child]:pl-0 [&_th:last-child]:pr-0 [&_td:last-child]:pr-0">
+          <TableHeader><TableRow><TableHead>磁盘占用</TableHead><TableHead className="text-right">占用空间</TableHead></TableRow></TableHeader>
           <TableBody>{(Object.keys(diskNames) as Array<keyof typeof diskNames>).map(id => {
             const disk = value?.disks.find(item => item.id === id)
             return <TableRow key={id} className="h-9 border-0">

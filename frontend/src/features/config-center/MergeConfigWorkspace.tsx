@@ -97,7 +97,7 @@ export function MergeConfigWorkspace({
               {active.kind === "local" && !active.config && <FieldError>源配置已删除；现有提取关系仍保留</FieldError>}
               {relationConflict && <div className="text-sm text-destructive">存在多个提取关系，需先处理</div>}
               <Field><FieldLabel>来源</FieldLabel><Input value={active.kind === "subscription" ? active.subscription.name : active.local?.configName ?? active.localRelations[0]?.configName ?? active.config?.name ?? "源配置已不存在"} readOnly /></Field>
-              <Field><FieldLabel htmlFor="merge-provider-name">Provider 名称</FieldLabel><Input id="merge-provider-name" value={draft.providerName} disabled={editingDisabled} onChange={(event) => workspace.setDraft({ providerName: event.target.value })} /></Field>
+              <Field><FieldLabel htmlFor="merge-provider-name">代理集合名称</FieldLabel><Input id="merge-provider-name" value={draft.providerName} disabled={editingDisabled} onChange={(event) => workspace.setDraft({ providerName: event.target.value })} /></Field>
               <Field orientation="horizontal"><div className="flex-1"><FieldLabel htmlFor="merge-enabled">启用提取</FieldLabel></div><Switch id="merge-enabled" checked={draft.enabled} disabled={editingDisabled} onCheckedChange={(enabled) => workspace.setDraft({ enabled })} /></Field>
               <p className="text-sm text-muted-foreground">提取始终保留源配置中的全部代理节点。订阅过滤请在订阅页面设置。</p>
           </div> : <div className="flex h-full items-center justify-center text-sm text-muted-foreground">选择一个配置来源</div>}

@@ -8,31 +8,23 @@ import {
 } from "../../api/configClient.ts"
 import { measureRuntimeStep } from "../../shared/runtimeApplication.ts"
 import { ControllerError, patchControllerMode } from "../../api/controllerClient.ts"
-import { readCoreUpdate } from "../../api/systemClient.ts"
-import { coreSettingsDefaults, sourceSettingsDocument } from "../../shared/managerSettingsSource.ts"
+import { sourceSettingsDocument } from "../../shared/managerSettingsSource.ts"
 
 export type PersistentMode = "rule" | "direct" | "global"
 
 export async function readPersistentMode(
-  coreVersion?: string,
   signal?: AbortSignal,
-  services = { settings: readManagerSettings, applied: readAppliedRuntime, core: readCoreUpdate },
+  services = { settings: readManagerSettings, applied: readAppliedRuntime },
 ) {
   const [settings, applied] = await Promise.all([
     services.settings(signal), services.applied(signal),
   ])
   const runtime = applied.state
   const sourceMode = applied.content ? sourceSettingsDocument(applied.content).mode : undefined
-  let appliedMode = runtime.lastSuccessful?.generated.mode ?? sourceMode
-  let value: unknown = settings.overrides.mode ?? sourceMode
-  if (value === undefined || appliedMode === undefined) {
-    const core = await services.core(signal).catch(() => null)
-    const defaultMode = core && (!coreVersion || coreVersion === core.current?.version) ? coreSettingsDefaults(core.current)?.mode : undefined
-    value ??= defaultMode
-    appliedMode ??= defaultMode
-  }
+  const appliedMode = runtime.lastSuccessful?.generated.mode ?? sourceMode
+  const value: unknown = settings.overrides.mode ?? sourceMode
   const mode: PersistentMode | null = value === "rule" || value === "direct" || value === "global" ? value : null
-  return { mode, pending: mode !== appliedMode || !runtime.lastSuccessful || runtime.lastAttempt?.status === "pending" || runtime.lastAttempt?.status === "unknown" }
+  return { mode, pending: mode === null || mode !== appliedMode || !runtime.lastSuccessful || runtime.lastAttempt?.status === "pending" || runtime.lastAttempt?.status === "unknown" }
 }
 
 export type PersistentModeRetry = { mode: PersistentMode; attemptId: string; version: number }

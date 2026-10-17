@@ -1,7 +1,7 @@
 import { Ruler, ShieldCheck, Workflow } from "lucide-react"
 
 const metrics = [
-  { key: "total", label: "配置规则", icon: Ruler },
+  { key: "total", label: "规则总数", icon: Ruler },
   { key: "types", label: "规则类型", icon: Workflow },
   { key: "visible", label: "当前显示", icon: ShieldCheck },
 ] as const

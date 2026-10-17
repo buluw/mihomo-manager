@@ -198,7 +198,7 @@ export function ConfigFileWorkspace({
                 <TriangleAlert />
                 <AlertTitle>配置功能暂不可用</AlertTitle>
                 <AlertDescription>
-                  configd 未连接。Controller 运行管理功能不受影响。
+                  配置服务未连接。
                 </AlertDescription>
                 <AlertAction>
                   <Button

@@ -13,7 +13,7 @@
 ```bash
 stage="/tmp/mihomo-manager-deploy-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 mkdir -p "$stage/source"
-tar -xzf mihomo-manager-v0.2.0-source.tar.gz \
+tar -xzf mihomo-manager-v0.2.1-source.tar.gz \
   -C "$stage/source" --strip-components=1
 sudo bash "$stage/source/deploy/debian/update.sh" "$stage" full
 ```
@@ -45,7 +45,7 @@ sudo bash "$stage/source/deploy/debian/update.sh" "$stage" full
 sha256sum --check SHA256SUMS
 stage="/tmp/mihomo-runtime-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 mkdir -m 700 "$stage"
-cp mihomo-manager-v0.2.0-linux-x64.tar.gz "$stage/runtime.tar.gz"
+cp mihomo-manager-v0.2.1-linux-x64.tar.gz "$stage/runtime.tar.gz"
 tar -xOf "$stage/runtime.tar.gz" ./deploy/debian/runtime-artifact.sh > "$stage/runtime-artifact.sh"
 sudo bash "$stage/runtime-artifact.sh" install "$stage"
 ```

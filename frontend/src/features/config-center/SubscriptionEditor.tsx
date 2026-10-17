@@ -82,7 +82,7 @@ export function SubscriptionEditor({
             <div className="min-w-0 flex-1">
               <FieldLabel htmlFor="subscription-auto">自动更新</FieldLabel>
               <FieldDescription>
-                由 configd 按周期更新，不依赖浏览器保持打开。
+                订阅会按周期自动更新，无需保持浏览器打开。
               </FieldDescription>
             </div>
             <Switch
@@ -132,7 +132,7 @@ export function SubscriptionEditor({
           )}
           {item && <div className="grid gap-4 border-t pt-5">
             <Field orientation="horizontal"><div className="min-w-0 flex-1"><FieldLabel htmlFor="subscription-filter">过滤节点</FieldLabel><FieldDescription>过滤下载得到的完整订阅配置，不依赖 Provider 提取关系。</FieldDescription></div><Switch id="subscription-filter" checked={filterDraft.enabled} disabled={disabled} onCheckedChange={(enabled) => onFilterChange({ enabled })} /></Field>
-            <Field data-invalid={Boolean(filterError)}><FieldLabel htmlFor="subscription-filter-rules">过滤规则</FieldLabel><Textarea id="subscription-filter-rules" className="min-h-40" value={filterDraft.rules} disabled={disabled} onChange={(event) => onFilterChange({ rules: event.target.value })} /><FieldDescription>每行一条；普通文字支持 `&` 全词组合，`/表达式/flags` 表示正则。内置规则可直接编辑或删除。</FieldDescription><FieldError>{filterError}</FieldError></Field>
+            <Field data-invalid={Boolean(filterError)}><FieldLabel htmlFor="subscription-filter-rules">过滤规则</FieldLabel><Textarea id="subscription-filter-rules" className="min-h-40" value={filterDraft.rules} disabled={disabled} onChange={(event) => onFilterChange({ rules: event.target.value })} /><FieldDescription>每行一条；多个关键词用 & 连接，名称须全部包含（不区分大小写）；/表达式/flags 表示正则。内置规则可直接编辑或删除。</FieldDescription><FieldError>{filterError}</FieldError></Field>
             <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={disabled || filterPreviewPending || Boolean(filterError)} onClick={onFilterPreview}>{filterPreviewPending ? <Spinner data-icon="inline-start" /> : <FileDown data-icon="inline-start" />}预览</Button><Button type="button" disabled={disabled || Boolean(filterError)} onClick={onFilterSave}><Save data-icon="inline-start" />保存过滤</Button></div>
             {filterPreview && <div className="rounded-md border bg-muted/20 p-3 text-xs"><div className="font-medium">匹配 {filterPreview.matchedNames.length} / {filterPreview.totalCount}，将保留 {filterPreview.remainingCount}</div><div className="mt-2 text-muted-foreground">{filterPreview.matchedNames.join("、") || "没有命中节点"}</div></div>}
           </div>}

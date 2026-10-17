@@ -96,11 +96,11 @@ export function ManagerSettingsPanel({
   const [category, setCategory] = useState("general")
   const {
     sourceName, saving, dirty, pendingApply, message, error, sourceLoading, sourceReady, sourceStatus, fieldEditing, setFieldEditing,
-    sourceError, defaultsLabel, form, formError, disabled, availableInterfaces, selectedInterface,
+    sourceError, runtimeValuesLabel, form, formError, disabled, availableInterfaces, selectedInterface,
     interfacesLoading, interfacesError, tun, tunError, tunMessage, directDelayDraft, directDelayDirty,
     directDelayValidation, directDelayDisabled, directDelayError, directDelayMessage, savingDirectDelay, patch,
     reset, refreshInterfaces, recoverTun, patchDirectDelay, saveDirectDelay, saveAndApply,
-    cancelChanges, cancelDirectDelay, isExplicit, categoryChanged, known,
+    cancelChanges, cancelDirectDelay, isExplicit, categoryChanged, known, valueStatus,
   } = useManagerSettings({ notify, onRefresh, coreVersion, coreBusy, onRecoverTun, onApplyingChange })
   const resetButton = (group: SettingGroup, label: string) => <Tooltip><TooltipTrigger render={<span className="inline-flex" />}><Button variant="ghost" size="icon-sm" className="md:size-8" aria-label={`${label}：恢复配置值`} disabled={disabled || !isExplicit(group)} onClick={() => reset(group)}><RotateCcw /></Button></TooltipTrigger><TooltipContent>恢复配置值</TooltipContent></Tooltip>
 
@@ -137,11 +137,11 @@ export function ManagerSettingsPanel({
           {(error || sourceError || formError) && <Alert variant="destructive"><CircleAlert /><AlertTitle>无法保存并应用</AlertTitle><AlertDescription>{error || sourceError || formError}</AlertDescription></Alert>}
       <TabsContent value="general" keepMounted className="flex flex-col gap-6">
         <SettingsGroup title="基础运行">
-          <SelectField reset={resetButton("mode", "运行模式")} id="manager-mode" label="运行模式" value={form.mode} items={modeItems} disabled={disabled} onChange={(value) => patch({ mode: value as ManagerSettingsForm["mode"] })} />
-          <SelectField reset={resetButton("logLevel", "日志等级")} id="manager-log-level" label="日志等级" value={form.logLevel} items={logLevelItems} disabled={disabled} onChange={(value) => patch({ logLevel: value as ManagerSettingsForm["logLevel"] })} />
-          <SelectField reset={resetButton("ipv6", "IPv6")} id="manager-ipv6" label="IPv6" value={form.ipv6} items={booleanItems} disabled={disabled} onChange={(value) => patch({ ipv6: value as BooleanOverride })} />
-          <SelectField reset={resetButton("tcpConcurrent", "TCP 并发")} id="manager-tcp-concurrent" label="TCP 并发" value={form.tcpConcurrent} items={booleanItems} disabled={disabled} onChange={(value) => patch({ tcpConcurrent: value as BooleanOverride })} />
-          <SelectField reset={resetButton("allowLan", "允许局域网")} id="manager-allow-lan" label="允许局域网" value={form.allowLan} items={booleanItems} disabled={disabled} onChange={(value) => patch({ allowLan: value as BooleanOverride })} />
+          <SelectField status={valueStatus.mode} reset={resetButton("mode", "运行模式")} id="manager-mode" label="运行模式" value={form.mode} items={modeItems} disabled={disabled} onChange={(value) => patch({ mode: value as ManagerSettingsForm["mode"] })} />
+          <SelectField status={valueStatus.logLevel} reset={resetButton("logLevel", "日志等级")} id="manager-log-level" label="日志等级" value={form.logLevel} items={logLevelItems} disabled={disabled} onChange={(value) => patch({ logLevel: value as ManagerSettingsForm["logLevel"] })} />
+          <SelectField status={valueStatus.ipv6} reset={resetButton("ipv6", "IPv6")} id="manager-ipv6" label="IPv6" value={form.ipv6} items={booleanItems} disabled={disabled} onChange={(value) => patch({ ipv6: value as BooleanOverride })} />
+          <SelectField status={valueStatus.tcpConcurrent} reset={resetButton("tcpConcurrent", "TCP 并发")} id="manager-tcp-concurrent" label="TCP 并发" value={form.tcpConcurrent} items={booleanItems} disabled={disabled} onChange={(value) => patch({ tcpConcurrent: value as BooleanOverride })} />
+          <SelectField status={valueStatus.allowLan} reset={resetButton("allowLan", "允许局域网")} id="manager-allow-lan" label="允许局域网" value={form.allowLan} items={booleanItems} disabled={disabled} onChange={(value) => patch({ allowLan: value as BooleanOverride })} />
         </SettingsGroup>
         <SettingsGroup title="直连测速" description="独立保存，下次直连测速生效。">
           <SelectField reset={null} id="manager-direct-delay-preset" label="测速地址" value={directDelayDraft.preset} items={directDelayItems} disabled={directDelayDisabled} onChange={value => patchDirectDelay({ preset: value as DirectDelayTestSettings["preset"] })} />
@@ -166,10 +166,10 @@ export function ManagerSettingsPanel({
 
       <TabsContent value="dns" keepMounted className="flex flex-col gap-6">
         <SettingsGroup title="DNS 服务">
-          <SelectField reset={resetButton("dnsEnable", "DNS 服务")} id="manager-dns-enable" label="DNS 服务" value={form.dnsEnable} items={booleanItems} disabled={disabled} onChange={(value) => patch({ dnsEnable: value as BooleanOverride })} />
+          <SelectField status={valueStatus.dnsEnable} reset={resetButton("dnsEnable", "DNS 服务")} id="manager-dns-enable" label="DNS 服务" value={form.dnsEnable} items={booleanItems} disabled={disabled} onChange={(value) => patch({ dnsEnable: value as BooleanOverride })} />
           <TextSettingField
             id="manager-dns-listen"
-            known={known.has("dnsListen")} reset={resetButton("dnsListen", "监听地址与端口")}
+            known={known.has("dnsListen")} status={valueStatus.dnsListen} reset={resetButton("dnsListen", "监听地址与端口")}
             label="监听地址与端口"
             description="例如 0.0.0.0:53；空值表示不启用 DNS 网络监听。"
             value={form.dnsListen}
@@ -180,7 +180,7 @@ export function ManagerSettingsPanel({
         <SettingsGroup title="解析策略">
           <TextSettingField
             id="manager-dns-nameserver"
-            onRestore={() => reset("dnsNameservers")} canRestore={isExplicit("dnsNameservers")} known={known.has("dnsNameservers")} reset={resetButton("dnsNameservers", "上游 DNS")}
+            onRestore={() => reset("dnsNameservers")} canRestore={isExplicit("dnsNameservers")} known={known.has("dnsNameservers")} status={valueStatus.dnsNameservers} reset={resetButton("dnsNameservers", "上游 DNS")}
             label="上游 DNS"
             description="每行一个服务器；留空会保存空列表。"
             value={form.dnsNameservers}
@@ -188,10 +188,10 @@ export function ManagerSettingsPanel({
             multiline onEditingChange={setFieldEditing}
             onChange={(value) => patch({ dnsNameservers: value })}
           />
-          <SelectField reset={resetButton("dnsEnhancedMode", "增强模式")} id="manager-dns-mode" label="增强模式" value={form.dnsEnhancedMode} items={enhancedModeItems} disabled={disabled} onChange={(value) => patch({ dnsEnhancedMode: value as ManagerSettingsForm["dnsEnhancedMode"] })} />
+          <SelectField status={valueStatus.dnsEnhancedMode} reset={resetButton("dnsEnhancedMode", "增强模式")} id="manager-dns-mode" label="增强模式" value={form.dnsEnhancedMode} items={enhancedModeItems} disabled={disabled} onChange={(value) => patch({ dnsEnhancedMode: value as ManagerSettingsForm["dnsEnhancedMode"] })} />
           <TextSettingField
             id="manager-dns-fakeip-filter"
-            onRestore={() => reset("dnsFakeIpFilter")} canRestore={isExplicit("dnsFakeIpFilter")} known={known.has("dnsFakeIpFilter")} reset={resetButton("dnsFakeIpFilter", "Fake-IP 排除域名")}
+            onRestore={() => reset("dnsFakeIpFilter")} canRestore={isExplicit("dnsFakeIpFilter")} known={known.has("dnsFakeIpFilter")} status={valueStatus.dnsFakeIpFilter} reset={resetButton("dnsFakeIpFilter", "Fake-IP 排除域名")}
             label="Fake-IP 排除域名"
             description="每行一个域名或 Mihomo 域名通配表达式。"
             value={form.dnsFakeIpFilter}
@@ -199,7 +199,7 @@ export function ManagerSettingsPanel({
             multiline onEditingChange={setFieldEditing}
             onChange={(value) => patch({ dnsFakeIpFilter: value })}
           />
-          <SelectField reset={resetButton("dnsIpv6", "解析 IPv6")} id="manager-dns-ipv6" label="解析 IPv6" value={form.dnsIpv6} items={booleanItems} disabled={disabled} onChange={(value) => patch({ dnsIpv6: value as BooleanOverride })} />
+          <SelectField status={valueStatus.dnsIpv6} reset={resetButton("dnsIpv6", "解析 IPv6")} id="manager-dns-ipv6" label="解析 IPv6" value={form.dnsIpv6} items={booleanItems} disabled={disabled} onChange={(value) => patch({ dnsIpv6: value as BooleanOverride })} />
         </SettingsGroup>
         {dnsTools}
       </TabsContent>
@@ -215,14 +215,14 @@ export function ManagerSettingsPanel({
                 <Button variant="outline" size="icon-sm" aria-label="重新读取 TUN 状态" disabled={interfacesLoading || saving || coreBusy} onClick={() => void refreshInterfaces()}><RefreshCw /></Button>
                 {tun?.state === "residual" && <Button variant="outline" size="sm" disabled={saving || savingDirectDelay || interfacesLoading || coreBusy} onClick={() => void recoverTun()}><RotateCcw data-icon="inline-start" className={recoveringTun ? "animate-spin" : undefined} />{recoveringTun ? "恢复中" : "重启核心恢复"}</Button>}
           </SettingsToolRow>
-          <SelectField reset={resetButton("tunEnable", "TUN 模式")} id="manager-tun-enable" label="TUN 模式" value={form.tunEnable} items={booleanItems} disabled={disabled} onChange={(value) => patch({ tunEnable: value as BooleanOverride })} />
-          <SelectField reset={resetButton("tunStack", "协议栈")} id="manager-tun-stack" label="协议栈" value={form.tunStack} items={tunStackItems} disabled={disabled} onChange={(value) => patch({ tunStack: value as ManagerSettingsForm["tunStack"] })} />
-          <SelectField reset={resetButton("tunAutoRoute", "自动路由")} id="manager-tun-auto-route" label="自动路由" value={form.tunAutoRoute} items={booleanItems} disabled={disabled} onChange={(value) => patch({ tunAutoRoute: value as BooleanOverride })} />
+          <SelectField status={valueStatus.tunEnable} reset={resetButton("tunEnable", "TUN 模式")} id="manager-tun-enable" label="TUN 模式" value={form.tunEnable} items={booleanItems} disabled={disabled} onChange={(value) => patch({ tunEnable: value as BooleanOverride })} />
+          <SelectField status={valueStatus.tunStack} reset={resetButton("tunStack", "协议栈")} id="manager-tun-stack" label="协议栈" value={form.tunStack} items={tunStackItems} disabled={disabled} onChange={(value) => patch({ tunStack: value as ManagerSettingsForm["tunStack"] })} />
+          <SelectField status={valueStatus.tunAutoRoute} reset={resetButton("tunAutoRoute", "自动路由")} id="manager-tun-auto-route" label="自动路由" value={form.tunAutoRoute} items={booleanItems} disabled={disabled} onChange={(value) => patch({ tunAutoRoute: value as BooleanOverride })} />
         </SettingsGroup>
         <SettingsGroup title="出口网卡">
           <Field className="gap-0">
             <SelectField id="manager-outbound-mode" label="出口方式" value={form.outboundMode} items={outboundModeItems} disabled={disabled}
-              onChange={value => patch({ outboundMode: value as ManagerSettingsForm["outboundMode"] })} reset={resetButton("outboundMode", "出口网卡")} />
+              onChange={value => patch({ outboundMode: value as ManagerSettingsForm["outboundMode"] })} status={valueStatus.outboundMode} reset={resetButton("outboundMode", "出口网卡")} />
             {form.outboundMode === "manual" && (
               <FieldGroup className="gap-0">
                 <Field orientation="horizontal" className={settingRowClassName}>
@@ -282,7 +282,7 @@ export function ManagerSettingsPanel({
         <SettingsGroup title="DNS 接管">
           <TextSettingField
             id="manager-tun-dns-hijack"
-            onRestore={() => reset("tunDnsHijack")} canRestore={isExplicit("tunDnsHijack")} known={known.has("tunDnsHijack")} reset={resetButton("tunDnsHijack", "DNS 接管")}
+            onRestore={() => reset("tunDnsHijack")} canRestore={isExplicit("tunDnsHijack")} known={known.has("tunDnsHijack")} status={valueStatus.tunDnsHijack} reset={resetButton("tunDnsHijack", "DNS 接管")}
             label="DNS 接管"
             description="每行一个接管地址，例如 any:53。"
             value={form.tunDnsHijack}
@@ -295,7 +295,7 @@ export function ManagerSettingsPanel({
 
       <TabsContent value="sniffer" keepMounted className="flex flex-col gap-6">
         <SettingsGroup title="嗅探">
-          <SelectField reset={resetButton("snifferEnable", "嗅探总开关")} id="manager-sniffer-enable" label="嗅探总开关" value={form.snifferEnable} items={booleanItems} disabled={disabled} onChange={(value) => patch({ snifferEnable: value as BooleanOverride })} />
+          <SelectField status={valueStatus.snifferEnable} reset={resetButton("snifferEnable", "嗅探总开关")} id="manager-sniffer-enable" label="嗅探总开关" value={form.snifferEnable} items={booleanItems} disabled={disabled} onChange={(value) => patch({ snifferEnable: value as BooleanOverride })} />
         </SettingsGroup>
         <SettingsGroup title="协议与端口">
           <Field className="gap-0">
@@ -316,7 +316,7 @@ export function ManagerSettingsPanel({
               </div>
               <div>{resetButton("sniffProtocols", "嗅探协议与端口")}</div>
               <FieldDescription className={settingDetailClassName}>协议与端口作为一项设置；修改后保存所选集合，端口留空表示所有端口。</FieldDescription>
-              {!known.has("sniffProtocols") && <FieldDescription className={settingDetailClassName}>协议默认值未知，请明确选择。</FieldDescription>}
+              {Boolean(valueStatus.sniffProtocols) && <FieldDescription className={settingDetailClassName}>{valueStatus.sniffProtocols}</FieldDescription>}
             </div>
             <FieldGroup className="gap-0">
               {sniffProtocols.map((protocol) => {
@@ -333,7 +333,7 @@ export function ManagerSettingsPanel({
         <SettingsGroup title="跳过规则">
           <TextSettingField
             id="manager-sniffer-skip-domain"
-            onRestore={() => reset("snifferSkipDomain")} canRestore={isExplicit("snifferSkipDomain")} known={known.has("snifferSkipDomain")} reset={resetButton("snifferSkipDomain", "跳过域名")}
+            onRestore={() => reset("snifferSkipDomain")} canRestore={isExplicit("snifferSkipDomain")} known={known.has("snifferSkipDomain")} status={valueStatus.snifferSkipDomain} reset={resetButton("snifferSkipDomain", "跳过域名")}
             label="跳过域名"
             description="每行一个域名或 Mihomo 域名通配表达式；明确留空表示不跳过。"
             value={form.snifferSkipDomain}
@@ -347,9 +347,9 @@ export function ManagerSettingsPanel({
       <TabsContent value="access" keepMounted><AccessSettings disabled={coreBusy || saving} /></TabsContent>
           <div hidden={category === "access"} className={category === "access" ? "hidden" : "flex min-w-0 items-center gap-1 text-xs text-muted-foreground"}>
             <span className="min-w-0 wrap-anywhere">{sourceStatus}</span>
-            <Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="设置值与默认值说明" />}><CircleHelp /></TooltipTrigger><TooltipContent>显示来源配置准备应用的值；仅保存修改项，恢复配置值也需保存。{defaultsLabel}</TooltipContent></Tooltip>
+            <Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="设置值来源说明" />}><CircleHelp /></TooltipTrigger><TooltipContent>明确值依次来自管理器设置、来源配置；缺项跟随 Core，当前值仅作运行参考。仅保存修改项，恢复配置值也需保存。{runtimeValuesLabel}</TooltipContent></Tooltip>
           </div>
-          {category !== "access" && sourceReady && known.size < Object.keys(settingGroups).length && <FieldDescription>部分字段或默认值无法确定，已标明未知；可以明确设置后保存。</FieldDescription>}
+          {category !== "access" && sourceReady && known.size < Object.keys(settingGroups).length && <FieldDescription>未明确设置的字段跟随 Core；当前值不代表准备应用值或完整运行配置身份。</FieldDescription>}
         </div>
       </div>
       {(dirty || pendingApply) && <div aria-label="设置操作" className="flex shrink-0 items-center gap-2 border-t bg-background px-4 py-2.5 md:hidden">{saveActions}</div>}

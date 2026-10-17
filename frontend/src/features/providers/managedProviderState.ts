@@ -199,8 +199,8 @@ export function managementBaselineResourcesChanged(
 
 export function managementLifecycleState(baseline: ManagementBaseline | null): ManagementLifecycleState {
   return baseline
-    ? { baseline, requestKey: null, status: "ready", message: "合并配置已同步" }
-    : { baseline: null, requestKey: null, status: "loading", message: "正在读取合并配置" }
+    ? { baseline, requestKey: null, status: "ready", message: "来源配置已同步" }
+    : { baseline: null, requestKey: null, status: "loading", message: "正在读取来源配置" }
 }
 
 export function reduceManagementLifecycle(
@@ -208,13 +208,13 @@ export function reduceManagementLifecycle(
   action: ManagementLifecycleAction,
 ): ManagementLifecycleState {
   if (action.type === "start") {
-    return { ...state, requestKey: action.requestKey, status: "loading", message: "正在后台读取合并配置" }
+    return { ...state, requestKey: action.requestKey, status: "loading", message: "正在后台读取来源配置" }
   }
   if (action.type === "external-conflict") {
     return { ...state, status: "stale", message: action.message }
   }
   if (action.type === "own-commit") {
-    return { baseline: action.baseline, requestKey: null, status: "ready", message: "合并配置已同步" }
+    return { baseline: action.baseline, requestKey: null, status: "ready", message: "来源配置已同步" }
   }
   if (action.type === "disk-diverged") {
     return { baseline: action.baseline, requestKey: null, status: "stale", message: action.message }
@@ -234,11 +234,11 @@ export function reduceManagementLifecycle(
       ? managementBaselineKey(true, state.baseline.snapshot.name, state.baseline.snapshot.sha256)
       : null
     if (currentKey === action.baselineKey && !action.resourcesChanged) {
-      return { ...state, requestKey: null, status: "ready", message: "合并配置已同步" }
+      return { ...state, requestKey: null, status: "ready", message: "来源配置已同步" }
     }
     return { ...state, status: "stale", message: "磁盘配置已刷新；已保留当前未应用草稿，请先处理冲突" }
   }
-  return { baseline: action.baseline, requestKey: null, status: "ready", message: "合并配置已同步" }
+  return { baseline: action.baseline, requestKey: null, status: "ready", message: "来源配置已同步" }
 }
 
 export function managementLifecycleView(state: ManagementLifecycleState, busy: boolean) {

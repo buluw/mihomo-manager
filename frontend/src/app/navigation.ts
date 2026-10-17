@@ -37,7 +37,7 @@ export const navigationItems: NavigationItem[] = [
   { id: "rules", path: "/rules", label: "规则", group: "runtime", mobile: "primary", icon: ListTree },
   { id: "connections", path: "/connections", label: "连接", group: "runtime", mobile: "more", icon: Cable },
   { id: "config-center", path: "/config-center", label: "编辑配置", group: "config", mobile: "primary", icon: FileCog },
-  { id: "collections", path: "/collections", label: "代理集合", group: "config", mobile: "more", icon: Boxes },
+  { id: "collections", path: "/collections", label: "集合", group: "config", mobile: "more", icon: Boxes },
   { id: "runtime-config", path: "/runtime-config", label: "运行配置", group: "config", mobile: "more", icon: FileSearch },
   { id: "logs", path: "/logs", label: "日志", group: "diagnostic", mobile: "more", icon: TerminalSquare },
   { id: "settings", path: "/settings", label: "设置", group: null, mobile: "more", icon: Settings2 },

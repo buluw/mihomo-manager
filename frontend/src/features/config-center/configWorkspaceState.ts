@@ -111,7 +111,7 @@ export function configInlineMutationError(error: unknown) {
   const issue = providerFilesErrorMessage(error)
   if (issue) return issue
   const value = error as { code?: string; status?: number }
-  if (value.code === "config_source_in_use") return "此配置正在使用，请先切换到其他配置"
+  if (value.code === "config_source_in_use") return "此配置是最近成功加载来源，请先成功应用其他配置，再重命名或删除。"
   if (value.code === "config_source_usage_unknown") return "配置使用状态未知，请先成功应用其他配置再重命名或删除"
   if (value.code === "config_exists") return "同名配置文件已存在"
   if (value.code === "validation_failed") return "Mihomo 校验失败，请检查上传的 YAML 配置"

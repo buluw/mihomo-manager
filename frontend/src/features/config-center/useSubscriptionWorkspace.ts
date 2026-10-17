@@ -251,7 +251,7 @@ export function useSubscriptionWorkspace(
         if (!mounted.current) return
         publishItem(saved)
         select(saved)
-        notify("订阅配置已保存")
+        notify("订阅设置已保存")
         return
       }
       let saved = activeId
@@ -278,7 +278,7 @@ export function useSubscriptionWorkspace(
       if (!mounted.current) return
       publishItem(saved)
       select(saved)
-      notify(activeId ? "订阅配置已保存" : "订阅已创建")
+      notify(activeId ? "订阅设置已保存" : "订阅已创建")
     } catch (error) {
       if (!mounted.current) return
       notify(configErrorMessage(error as Error), "error")

@@ -3,7 +3,7 @@ import { providerReferenceMessage } from "./collectionCleanup.ts";
 
 export function configErrorMessage(error: Error) {
   if (error instanceof ConfigError) {
-    if (error.code === "config_source_in_use") return "此配置正在使用，请先切换到其他配置";
+    if (error.code === "config_source_in_use") return "此配置是最近成功加载来源，请先成功应用其他配置，再重命名或删除。";
     if (error.code === "config_source_usage_unknown") return "配置使用状态未知，请先成功应用其他配置再重命名或删除";
   }
   return error.message;

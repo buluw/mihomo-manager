@@ -921,7 +921,7 @@ test("unfinished aliases stay diagnosable until their anchors are defined", () =
   assert.match(diagnostics[0]!.message, /别名未定义/);
   const fixed = 'anchor: &missing ready\n' + body;
   assert.deepEqual(sourceDiagnostics(fixed), []);
-  assert.equal(configInlineMutationError(new ConfigError("blocked", 409, "config_source_in_use")), "此配置正在使用，请先切换到其他配置");
+  assert.equal(configInlineMutationError(new ConfigError("blocked", 409, "config_source_in_use")), "此配置是最近成功加载来源，请先成功应用其他配置，再重命名或删除。");
   assert.match(configInlineMutationError(new ConfigError("unknown", 409, "config_source_usage_unknown")), /重命名或删除/);
 });
 

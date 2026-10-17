@@ -87,7 +87,7 @@ export function Dashboard({
   useEffect(() => {
     const request = new AbortController()
     setModeReady(false)
-    void readPersistentMode(status?.version, request.signal).then((value) => {
+    void readPersistentMode(request.signal).then((value) => {
       if (request.signal.aborted) return
       setPersistentMode(value.mode)
       setModePending(value.pending)
@@ -144,7 +144,7 @@ export function Dashboard({
       setModeError((error as Error).message)
       notify((error as Error).message, "error")
       await Promise.all([
-        readPersistentMode(status?.version).then((value) => {
+        readPersistentMode().then((value) => {
           setPersistentMode(value.mode); setModePending(value.pending)
         }).catch(() => { setPersistentMode(null); setModeReady(false) }),
         onRefresh().catch(() => undefined),
@@ -240,8 +240,8 @@ export function Dashboard({
           ))}
         </ToggleGroup>
         {modeBusy ? <Spinner className="text-muted-foreground" aria-label="正在切换运行模式" /> : null}
-        {!modeBusy && !selectedMode && <span className="text-xs text-muted-foreground">{modeReady ? "配置模式未知，请明确选择" : "模式设置未就绪"}</span>}
-        {modePending && !modeBusy && <span className="text-xs text-muted-foreground">已保存设置待应用</span>}
+        {!modeBusy && !selectedMode && <span className="text-xs text-muted-foreground">{modeReady ? "模式未明确，请选择后保存" : "模式设置未就绪"}</span>}
+        {modePending && !modeBusy && selectedMode && <span className="text-xs text-muted-foreground">已保存设置待应用</span>}
         {(modePending || modeRetry) && selectedMode && <Button variant="outline" size="sm" disabled={modeBusy || !modeReady || !online} onClick={() => void setMode(selectedMode)}>{modeRetry ? "重试确认" : "重新应用"}</Button>}
         <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
           <StatusDot tone={statusError ? "error" : pending || !streamsHealthy ? "warn" : "ok"} />
@@ -310,7 +310,7 @@ export function Dashboard({
                 aria-label="实时流量统计图"
               />
             ) : (
-              <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">等待 Controller 流量流</div>
+              <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">等待实时流量数据</div>
             )}
           </div>
           <div className="flex h-10 items-center gap-5 border-t px-4 text-xs text-muted-foreground">

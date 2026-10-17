@@ -346,7 +346,7 @@ export function ProxyMergeSettingsDialog({
     return <DropGroup key={group.id} id={group.id}>
       <div className="flex min-w-0 items-center gap-2">
         <DraggableGroupHandle group={group} />
-        <Input maxLength={120} value={group.displayName} onChange={(event) => onDraftChange(renameMergeGroup(draft, group.id, event.target.value))} aria-label="合并机器名称" />
+        <Input maxLength={120} value={group.displayName} onChange={(event) => onDraftChange(renameMergeGroup(draft, group.id, event.target.value))} aria-label="合并组名称" />
         <Badge variant="outline" className="shrink-0">{group.source === "manual" ? "人工" : "自动"}</Badge>
         <Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-sm" onClick={() => onDraftChange(splitMergeGroup(draft, group.id))} aria-label={`拆分 ${group.displayName || "未命名合并"}`} />}><Split /></TooltipTrigger><TooltipContent>拆分</TooltipContent></Tooltip>
       </div>
@@ -482,13 +482,13 @@ export function ProxyMergeSettingsDialog({
             </FieldGroup>
             <Separator className="my-4" />
             <div className="mb-2 flex items-center gap-2">
-              <h3 className="text-sm font-medium">已合并机器</h3>
+              <h3 className="text-sm font-medium">已合并组</h3>
               <Badge variant="secondary">{currentGroups.length}</Badge>
             </div>
             <div className="md:min-h-0 md:flex-1 md:overflow-y-auto md:[scrollbar-gutter:stable]">
               <div className="flex flex-col gap-2 md:pr-4">
                 {currentGroups.map((group) => renderGroup(group))}
-                {currentGroups.length === 0 && <p className="py-8 text-center text-muted-foreground">{absentGroups.length ? "当前没有出现的合并组" : "尚未设置合并机器"}</p>}
+                {currentGroups.length === 0 && <p className="py-8 text-center text-muted-foreground">{absentGroups.length ? "当前没有出现的合并组" : "尚未设置合并组"}</p>}
                 {absentGroups.length > 0 && <Collapsible open={showAbsentGroups} onOpenChange={setShowAbsentGroups}>
                   <CollapsibleTrigger render={<Button variant="ghost" className="w-full justify-start" />}>
                     <ChevronDown data-icon="inline-start" />当前未出现的合并组（{absentGroups.length}）

@@ -161,11 +161,11 @@ export function Proxies({ notify }: { notify: Notify }) {
   return (
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] gap-3 p-4 md:grid-rows-[auto_minmax(0,1fr)]">
       <div className="hidden min-w-0 flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 md:flex">
-        <span className="text-xs font-medium text-muted-foreground">运行配置</span>
+        <span className="text-xs font-medium text-muted-foreground">切换配置</span>
         <Select value={configSwitcher.target || null} onValueChange={(value) => value && configSwitcher.setTarget(String(value))} disabled={configSwitcher.busy}>
-          <SelectTrigger aria-label="运行配置" className="min-w-0 max-w-72 flex-1"><SelectValue placeholder={configSwitcher.listLoading ? "正在读取配置列表" : "选择配置"} /></SelectTrigger>
+          <SelectTrigger aria-label="切换配置" className="min-w-0 max-w-72 flex-1"><SelectValue placeholder={configSwitcher.listLoading ? "正在读取配置列表" : "选择配置"} /></SelectTrigger>
           <SelectContent side="bottom" align="start" alignItemWithTrigger={false} collisionAvoidance={{ side: "none", align: "shift", fallbackAxisSide: "none" }}>
-            <SelectGroup>{configSwitcher.files.map((file) => <SelectItem key={file.name} value={file.name}>{file.name}{file.name === configSwitcher.loaded ? "（当前）" : ""}</SelectItem>)}</SelectGroup>
+            <SelectGroup>{configSwitcher.files.map((file) => <SelectItem key={file.name} value={file.name}>{file.name}{file.name === configSwitcher.loaded ? "（最近成功加载）" : ""}</SelectItem>)}</SelectGroup>
           </SelectContent>
         </Select>
         <Button size="sm" disabled={!configSwitcher.target || configSwitcher.busy} onClick={() => void configSwitcher.apply()}>{configSwitcher.busy && <Spinner data-icon="inline-start" />}{configSwitcher.actionLabel}</Button>

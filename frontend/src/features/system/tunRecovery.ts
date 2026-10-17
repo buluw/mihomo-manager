@@ -4,12 +4,17 @@ import { operateCoreService, readCoreServiceStatus, readNetworkInterfaces, type 
 import { sourceSettingsDocument } from "../../shared/managerSettingsSource.ts"
 import { confirmedRuntimeSource } from "../../shared/runtimeApplication.ts"
 import { coreFailureMessage, readControllerConnection } from "./settingsActions.ts"
+import type { Json } from "../../shared/types.ts"
 
 export type TunRuntime = { enabled: boolean; device: string }
 export type TunObservation = TunRuntime & { state: "enabled" | "clear" | "residual" | "unconfirmed"; remainingDevices: string[] }
 
 export async function readTunRuntime(signal?: AbortSignal): Promise<TunRuntime> {
   const config = await controllerApi("/configs", { signal })
+  return tunRuntimeFromConfig(config)
+}
+
+export function tunRuntimeFromConfig(config: Json): TunRuntime {
   if (typeof config.tun?.enable !== "boolean" || typeof config.tun.device !== "string"
     || (config.tun.enable && !config.tun.device.trim())) {
     throw new Error("TUN 运行状态无法确认，请重新读取")

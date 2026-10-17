@@ -112,7 +112,7 @@ function providerError(error: unknown) {
   if (error instanceof ConfigError && error.code === "provider_file_conflict") return "Provider 文件已被其他设备修改"
   if (error instanceof ConfigError && error.code === "config_conflict") return "当前配置已被其他设备修改"
   if (error instanceof ConfigError && error.code === "provider_file_exists") return "集合名称、代理组名称或文件已存在，请检查当前主配置"
-  if (error instanceof ConfigError && error.code === "invalid_provider_file") return "请检查集合 YAML、名称及代理组归属；集合仅包含 proxies 节点列表"
+  if (error instanceof ConfigError && error.code === "invalid_provider_file") return "集合内容或设置无效，请检查当前代理集合或规则集合的格式、名称及配置引用。"
   return error instanceof Error ? configErrorMessage(error) : "集合操作失败"
 }
 

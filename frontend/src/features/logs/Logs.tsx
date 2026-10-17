@@ -206,7 +206,7 @@ export function Logs({ notify }: { notify: Notify }) {
   )
 
   const connectionText = paused
-    ? `已暂停${queued ? ` · ${queued} 条待显示` : ""}`
+    ? `已暂停显示${queued ? ` · ${queued} 条待显示` : ""}`
     : { connecting: "连接中", live: "实时跟随", reconnecting: "正在重连", offline: "已离线" }[connection]
   const connectionTone = paused ? "warn" : connection === "live" ? "ok" : connection === "offline" ? "error" : "warn"
 
@@ -342,10 +342,10 @@ export function Logs({ notify }: { notify: Notify }) {
             <TooltipContent>{autoScroll ? "跟随最新：点击停止" : "自由浏览：点击跟随最新"}</TooltipContent>
           </Tooltip>
           <Tooltip>
-            <TooltipTrigger render={<Button variant={paused ? "secondary" : "default"} size="icon" className="size-11 md:h-6 md:w-auto md:gap-1 md:px-2" aria-label={paused ? "继续实时流" : "暂停实时流"} aria-pressed={paused} onClick={togglePause} />}>
-              {paused ? <Play /> : <Pause />}<span className="hidden md:inline">{paused ? "继续实时流" : "暂停实时流"}</span>
+            <TooltipTrigger render={<Button variant={paused ? "secondary" : "default"} size="icon" className="size-11 md:h-6 md:w-auto md:gap-1 md:px-2" aria-label={paused ? "继续显示" : "暂停显示"} aria-pressed={paused} onClick={togglePause} />}>
+              {paused ? <Play /> : <Pause />}<span className="hidden md:inline">{paused ? "继续显示" : "暂停显示"}</span>
             </TooltipTrigger>
-            <TooltipContent>{paused ? "继续实时流" : "暂停实时流"}</TooltipContent>
+            <TooltipContent>{paused ? "继续显示" : "暂停显示"}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger render={<Button variant="outline" size="icon" className="size-11 md:h-6 md:w-auto md:gap-1 md:px-2" aria-label="复制当前日志" onClick={() => void copy()} disabled={!visible.length} />}><Clipboard /><span className="hidden md:inline">复制当前日志</span></TooltipTrigger>

@@ -21,11 +21,11 @@ node --test release/test/source.test.mjs
 
 ## 正式源码身份
 
-正式发布从独立的公开仓库产生：仅提交 `public-files.json` 内的源文件，生成的 `SOURCE_FILES_SHA256` 与 `SOURCE_METADATA.json` 随归档分发。在最终干净提交上建立与组件版本一致的标签（例如 `v0.2.0`），然后运行：
+正式发布从独立的公开仓库产生：仅提交 `public-files.json` 内的源文件，生成的 `SOURCE_FILES_SHA256` 与 `SOURCE_METADATA.json` 随归档分发。在最终干净提交上建立与组件版本一致的标签（例如 `v0.2.1`），然后运行：
 
 ```bash
 node release/source.mjs manifest /tmp/mihomo-release-identity --release
-node release/source.mjs export /tmp/mihomo-manager-v0.2.0 --release
+node release/source.mjs export /tmp/mihomo-manager-v0.2.1 --release
 ```
 
 `--release` 要求 HEAD 对应版本标签且工作区干净；元数据记录 `status=release`、公开 commit、标签、`dirty=false` 和源摘要。已导出的正式源码可以凭匹配的元数据与实际摘要保持该身份。省略此选项时仍生成候选身份，用于发布前验证。

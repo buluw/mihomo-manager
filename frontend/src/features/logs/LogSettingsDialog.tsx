@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 const retentionItems = [
   { value: "1", label: "1 天" },
   { value: "7", label: "1 周" },
-  { value: "30", label: "1 月" },
+  { value: "30", label: "30 天" },
   { value: "custom", label: "自定义" },
 ];
 
@@ -51,7 +51,7 @@ export function LogSettingsDialog({
         <form className="grid gap-4" onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>日志保留设置</DialogTitle>
-            <DialogDescription>由 logd 管理持久化历史；实时 Controller 流不受此设置影响。</DialogDescription>
+            <DialogDescription>设置历史日志的保留时间，不影响实时日志显示。</DialogDescription>
           </DialogHeader>
           <div className="grid gap-1.5">
             <Label htmlFor="retention-preset">保留时间</Label>

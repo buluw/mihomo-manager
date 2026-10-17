@@ -47,7 +47,7 @@ const at = (value: unknown, path: string[]): unknown => {
   for (const key of path) { if (value == null) return value; if (!map(value)) return null; value = value[key] }
   return value
 }
-const valid = (group: SettingGroup, value: unknown) => choices[group] ? choices[group]!.includes(String(value))
+const valid = (group: SettingGroup, value: unknown) => choices[group] ? typeof value === "string" && choices[group]!.includes(value)
   : booleanGroups.has(group) ? typeof value === "boolean" : stringGroups.has(group) ? typeof value === "string"
     : Array.isArray(value) && value.every(item => typeof item === "string")
 
@@ -74,13 +74,15 @@ export function settingsValuesEqual(left: ManagerOverrides, right: ManagerOverri
   return JSON.stringify(stable(left)) === JSON.stringify(stable(right))
 }
 
-export function resolveSettingsValues(draft: ManagerSettingsForm, source: Record<string, unknown>, defaults: ManagerOverrides | null) {
+function projectSettingsValues(draft: ManagerSettingsForm, source: Record<string, unknown>) {
   const resolved: Record<string, unknown> = {}
   const known = new Set<SettingGroup>()
-  const inherited = (path: string[]) => { const value = at(source, path); return value === undefined ? at(defaults, path) : value }
+  const invalid = new Set<SettingGroup>()
+  const inherited = (path: string[]) => at(source, path)
   for (const [group, path] of Object.entries(fieldPaths) as Array<[SettingGroup, string[]]>) {
     const value = inherited(path)
-    if (value === undefined || !valid(group, value)) continue
+    if (value === undefined) continue
+    if (!valid(group, value)) { invalid.add(group); continue }
     known.add(group)
     if (path.length === 1) resolved[path[0]!] = value
     else { const parent = (resolved[path[0]!] ??= {}) as Record<string, unknown>; parent[path[1]!] = value }
@@ -88,13 +90,15 @@ export function resolveSettingsValues(draft: ManagerSettingsForm, source: Record
   // Each persisted field inherits separately; the combined UI mode is derived afterwards.
   const name = draft.interfaceNameMode === "override" ? draft.interfaceName : inherited(["interface-name"])
   const auto = draft.autoDetectInterface === "follow" ? inherited(["tun", "auto-detect-interface"]) : draft.autoDetectInterface === "enabled"
+  if (name !== undefined && typeof name !== "string" || auto !== undefined && typeof auto !== "boolean") invalid.add("outboundMode")
+  if (typeof name === "string") resolved["interface-name"] = name
+  if (typeof auto === "boolean") { const tun = (resolved.tun ??= {}) as Record<string, unknown>; tun["auto-detect-interface"] = auto }
   if (typeof name === "string" && (name.trim() || typeof auto === "boolean")) {
-    known.add("outboundMode"); resolved["interface-name"] = name
-    const tun = (resolved.tun ??= {}) as Record<string, unknown>; tun["auto-detect-interface"] = auto
+    known.add("outboundMode")
   }
   let sniff = inherited(["sniffer", "sniff"])
   const legacy = at(source, ["sniffer", "sniffing"])
-  if ((!map(sniff) || Object.keys(sniff).length === 0) && legacy !== undefined) {
+  if ((sniff === undefined || map(sniff) && Object.keys(sniff).length === 0) && legacy !== undefined) {
     sniff = Array.isArray(legacy) && legacy.every(item => ["HTTP", "TLS", "QUIC"].includes(String(item).toUpperCase()))
       ? Object.fromEntries(legacy.map(item => [String(item).toUpperCase(), { ports: at(source, ["sniffer", "ports"]) ?? [] }])) : null
   }
@@ -103,7 +107,7 @@ export function resolveSettingsValues(draft: ManagerSettingsForm, source: Record
     known.add("sniffProtocols")
     const sniffer = (resolved.sniffer ??= {}) as Record<string, unknown>
     sniffer.sniff = Object.fromEntries(Object.entries(sniff).map(([key, value]) => [key, { ports: (value as Record<string, unknown>).ports ?? [] }]))
-  }
+  } else if (sniff !== undefined) invalid.add("sniffProtocols")
   const form = managerSettingsForm(resolved as ManagerOverrides)
   // Keep the user's manual selection while its required name is still being edited.
   if (draft.outboundMode === "manual") form.outboundMode = "manual"
@@ -116,8 +120,43 @@ export function resolveSettingsValues(draft: ManagerSettingsForm, source: Record
   for (const group of Object.keys(settingGroups) as SettingGroup[]) {
     if (!settingIsExplicit(draft, group)) continue
     if (group === "outboundMode") { explicit.add(group); continue }
-    known.add(group); explicit.add(group)
+    known.add(group); explicit.add(group); invalid.delete(group)
     Object.assign(form, Object.fromEntries(settingGroups[group].map(key => [key, draft[key]])))
   }
-  return { form, known, explicit }
+  return { form, known, explicit, invalid }
+}
+
+function currentSettingText(group: SettingGroup, form: ManagerSettingsForm) {
+  if (group === "outboundMode") return form.outboundMode === "manual" ? `手动指定 ${form.interfaceName}` : form.outboundMode === "auto" ? "自动识别" : "系统默认出口"
+  if (group === "sniffProtocols") return form.sniffProtocols.map(protocol => {
+    const ports = form[protocol === "HTTP" ? "httpPorts" : protocol === "TLS" ? "tlsPorts" : "quicPorts"]
+    return `${protocol}（${ports.split("\n").join("、") || "所有端口"}）`
+  }).join("、") || "空集合"
+  const keys = settingGroups[group]
+  const value = String(form[keys[keys.length - 1]!])
+  if (booleanGroups.has(group)) return value === "enabled" ? "启用" : "停用"
+  if (group === "mode") return ({ rule: "规则", direct: "直连", global: "全局" } as Record<string, string>)[value]!
+  return value.split("\n").join("、") || (stringGroups.has(group) ? "空" : "空列表")
+}
+
+export function resolveSettingsValues(draft: ManagerSettingsForm, source: Record<string, unknown>, runtime: unknown) {
+  const projected = projectSettingsValues(draft, source)
+  // Runtime values are reference text only; editing and persistence use the configuration form.
+  const currentSource = map(runtime) ? { ...runtime } : {}
+  // /configs uses gVisor casing and a top-level sniffing flag. Keep this mapping in the display projection.
+  if (map(currentSource.tun) && typeof currentSource.tun.stack === "string") currentSource.tun = { ...currentSource.tun, stack: currentSource.tun.stack.toLowerCase() }
+  if (typeof currentSource.sniffing === "boolean") currentSource.sniffer = { ...(map(currentSource.sniffer) ? currentSource.sniffer : {}), enable: currentSource.sniffing }
+  const current = projectSettingsValues(managerSettingsForm({}), currentSource)
+  const status: Partial<Record<SettingGroup, string>> = {}
+  for (const group of Object.keys(settingGroups) as SettingGroup[]) {
+    if (projected.invalid.has(group)) { status[group] = "源配置值格式无效，请检查配置"; continue }
+    if (projected.known.has(group)) continue
+    status[group] = "跟随 Core" + (current.known.has(group) && !current.invalid.has(group) ? ` · 当前：${currentSettingText(group, current.form)}` : "")
+    if (group === "outboundMode" && (projected.form.interfaceNameMode === "override" || projected.form.autoDetectInterface !== "follow")) {
+      const { interfaceNameMode, interfaceName, autoDetectInterface } = projected.form
+      const parts = [interfaceNameMode === "override" ? `指定网卡：${interfaceName || "空"}` : null, autoDetectInterface !== "follow" ? `自动识别：${autoDetectInterface === "enabled" ? "启用" : "停用"}` : null].filter(Boolean)
+      status[group] = `${parts.join("；")}；其余${status[group]}`
+    }
+  }
+  return { ...projected, status }
 }

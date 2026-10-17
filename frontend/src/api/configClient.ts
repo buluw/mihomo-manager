@@ -308,7 +308,7 @@ async function configRequest(
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
     const code = typeof payload.error === "string" ? payload.error : "request_failed";
-    throw new ConfigError("configd 请求失败 (" + response.status + ")", response.status, code, payload);
+    throw new ConfigError("配置服务请求失败（" + response.status + "）", response.status, code, payload);
   }
   return response;
 }

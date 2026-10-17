@@ -212,7 +212,7 @@ export function SystemPage({
             </ToolRow>
             {restartAction && <div className="px-3 py-3 md:px-4"><Alert>
               <AlertDescription className="gap-3">
-                <p>{restartAction === "start" ? "启动固定的 Mihomo Core 服务，并确认 Controller 恢复。" : "重启会短暂中断代理连接，继续使用当前运行配置；随后确认 Controller 恢复。"}</p>
+                <p>{restartAction === "start" ? "启动固定的 Mihomo Core 服务，并确认 Controller 恢复。" : "重启会短暂中断代理连接；随后确认 Controller 恢复。"}</p>
                 <div className="flex gap-2 md:justify-end">
                   <Button variant="outline" size="sm" className="flex-1 md:flex-none" onClick={() => setRestartAction(null)}>取消</Button>
                   <Button size="sm" className="flex-1 md:flex-none" disabled={Boolean(recoveryDisabled)} onClick={() => void restart(restartAction)}><RotateCw data-icon="inline-start" />{restartAction === "start" ? "确认启动" : "确认重启"}</Button>
@@ -322,7 +322,7 @@ function DnsQueryDialog({ online, disabled }: { online: boolean; disabled: boole
         <form className="flex flex-col gap-4" onSubmit={(event) => void submit(event)}>
           <DialogHeader>
             <DialogTitle>DNS 查询</DialogTitle>
-            <DialogDescription>通过 Mihomo 当前 DNS resolver 查询，不修改配置或缓存。</DialogDescription>
+            <DialogDescription>使用 Mihomo 当前 DNS 设置查询域名。</DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field data-invalid={Boolean(error) || undefined}>
