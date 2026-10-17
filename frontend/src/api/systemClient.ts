@@ -147,10 +147,18 @@ export async function systemUpdateRequest<T>(path: string, body?: object | File,
     throw new SystemError("update_request_unconfirmed", 0);
   }
   if (!response.ok) {
-    const data = await response.json().catch(() => ({})) as { error?: string };
-    throw new SystemError(response.status === 413 ? "file_too_large" : data.error ?? "update_failed", response.status);
+    const data = await response.json().catch(error => {
+      if (signal?.aborted) throw error;
+      return {};
+    }) as { error?: string };
+    throw new SystemError(response.status === 413 ? "file_too_large" : data.error ?? (
+      [502, 503, 504].includes(response.status) ? "update_request_unconfirmed" : "update_failed"), response.status);
   }
-  return response.json() as Promise<T>;
+  try { return await response.json() as T; }
+  catch (error) {
+    if (signal?.aborted || error instanceof SyntaxError) throw error;
+    throw new SystemError("update_request_unconfirmed", response.status);
+  }
 }
 const updateRequest = <T,>(action: string, body?: object | File, signal?: AbortSignal) => systemUpdateRequest<T>("/core/update" + (action ? "/" + action : ""), body, signal);
 export const readCoreUpdate = (signal?: AbortSignal) => updateRequest<CoreUpdateStatus>("", undefined, signal);

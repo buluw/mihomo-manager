@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
-import { cp, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fixture } from '../../../release/test/runtime-fixture.mjs';
 import { runtimeArchiveHash } from '../../../release/package.mjs';
-import { programIdentity, recoverWebUi, switchWebUi } from '../webui-install.mjs';
+import { programIdentity, readableTree, recoverWebUi, switchWebUi } from '../webui-install.mjs';
+
+async function assertReadable(path) {
+  const info = await stat(path);
+  assert.equal(info.mode & 0o777, info.isDirectory() ? 0o755 : 0o644, path);
+  if (info.isDirectory()) for (const child of await readdir(path)) await assertReadable(join(path, child));
+}
 
 async function setup(t) {
   const old = fixture(t), next = fixture(t, files => {
@@ -26,16 +32,24 @@ async function setup(t) {
 
 test('independent installation and rollback change only affected manager services and runtime scopes', async t => {
   const f = await setup(t);
+  const stop = f.operations.stop;
+  f.operations.stop = async names => {
+    assert.equal((await stat(join(f.paths.privateDirectory, 'transaction'))).mode & 0o777, 0o700);
+    await stop(names);
+  };
+  await chmod(join(f.paths.app, 'sysinfo/dist'), 0o700);
   await writeFile(join(f.paths.app, 'sysinfo', 'source-kept.txt'), 'development source');
   let accepted = false;
   const result = await switchWebUi({ action: 'install', sha256: f.sha256, id: randomUUID() }, f.paths, f.operations, async () => { accepted = true; });
   assert.equal(accepted, true); assert.equal(result.phase, 'succeeded'); assert.deepEqual(result.services, ['sysinfo']);
   assert.equal(result.previous.sha256, f.original.sha256);
+  await assertReadable(join(f.paths.privateDirectory, 'previous'));
   assert.equal(await readFile(join(f.paths.app, 'sysinfo', 'source-kept.txt'), 'utf8'), 'development source');
   assert.notEqual((await programIdentity(f.paths.app)).sha256, f.original.sha256);
   const back = await switchWebUi({ action: 'rollback', sha256: result.previous.sha256, id: randomUUID() }, f.paths, f.operations);
   assert.equal(back.phase, 'rolled-back'); assert.equal(back.error, null);
   assert.equal((await programIdentity(f.paths.app)).sha256, f.original.sha256);
+  await assertReadable(join(f.paths.privateDirectory, 'previous'));
   assert.equal(existsSync(join(f.paths.privateDirectory, 'transaction.json')), false);
 });
 
@@ -65,7 +79,19 @@ test('recovery resolves preparation and completes a committed previous-image rot
   const status = { phase: 'succeeded', busy: false, previous: f.original };
   await writeFile(join(f.paths.privateDirectory, 'transaction.json'), JSON.stringify({ phase: 'committed', changes: [], services: [], status }));
   await rename(join(transaction, 'old-image'), join(f.paths.privateDirectory, 'previous'));
+  await chmod(join(f.paths.privateDirectory, 'previous'), 0o700);
   assert.deepEqual(await recoverWebUi(f.paths, f.operations), status);
   assert.equal(JSON.parse(await readFile(join(f.paths.stateDirectory, 'status.json'), 'utf8')).busy, false);
   assert.equal((await programIdentity(join(f.paths.privateDirectory, 'previous'))).sha256, f.original.sha256);
+  await assertReadable(join(f.paths.privateDirectory, 'previous'));
+});
+
+test('deployment repairs readable backup trees including nested directories', async t => {
+  const f = await setup(t), previous = join(f.paths.privateDirectory, 'previous');
+  await cp(f.paths.app, previous, { recursive: true });
+  await mkdir(join(previous, 'frontend/dist/new/nested'), { recursive: true, mode: 0o700 });
+  await writeFile(join(previous, 'frontend/dist/new/nested/asset.js'), 'fixture', { mode: 0o600 });
+  await chmod(previous, 0o700);
+  await readableTree(previous);
+  await assertReadable(previous);
 });

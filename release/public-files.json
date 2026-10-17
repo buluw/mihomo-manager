@@ -276,6 +276,7 @@
     "frontend/src/features/system/useManagerSettings.ts",
     "frontend/src/features/system/useUpdatePolicy.ts",
     "frontend/src/features/system/useUpdateTask.ts",
+    "frontend/src/features/system/useWebUiRefresh.ts",
     "frontend/src/hooks/useAnimatedAction.ts",
     "frontend/src/hooks/useDirtyGuard.ts",
     "frontend/src/index.css",

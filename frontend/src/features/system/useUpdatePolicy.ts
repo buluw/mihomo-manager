@@ -42,6 +42,6 @@ export function useUpdatePolicy(active: boolean) {
     } catch (failure) { if (!abort.signal.aborted) setError(webUiRequestMessage(failure as Error)) }
     finally { request.current = null; if (!abort.signal.aborted) setSaving(false) }
   }
-  return { state, settings: draft?.settings ?? state?.settings, change, save, saving, saved, error: error || readError,
+  return { state, settings: draft?.settings ?? state?.settings, dirty: Boolean(draft), change, save, saving, saved, error: error || readError,
     refresh: () => { setDraft(null); setError(null); setReadError(null); setSaved(false); setRetry(value => value + 1) } }
 }

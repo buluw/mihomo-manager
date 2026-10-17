@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { SettingsGroup, SettingsToolRow } from "./ManagerSettingsFields"
-import { useUpdatePolicy } from "./useUpdatePolicy"
+import type { useUpdatePolicy } from "./useUpdatePolicy"
 import { webUiUpdateError } from "@/shared/webuiUpdateMessages"
 
 export type DownloadSettings = { mode: CoreDownloadRoute["mode"]; proxy: string; source: CoreDownloadSource; url: string; webuiUrl: string }
@@ -18,10 +18,9 @@ export const downloadSources = [{ value: "github", label: "GitHub 官方" }, { v
   { value: "ghproxy", label: "gh-proxy.com" }, { value: "ghproxynet", label: "ghproxy.net" },
   { value: "custom", label: "自定义完整下载地址" }, { value: "upload", label: "手动上传" }]
 
-export function UpdateSettings({ active, value, onChange, disabled }: {
-  active: boolean; value: DownloadSettings; onChange: (value: DownloadSettings) => void; disabled: boolean
+export function UpdateSettings({ policy, value, onChange, disabled }: {
+  policy: ReturnType<typeof useUpdatePolicy>; value: DownloadSettings; onChange: (value: DownloadSettings) => void; disabled: boolean
 }) {
-  const policy = useUpdatePolicy(active)
   const settings = policy.settings
   const policyBlocked = disabled || policy.saving || !policy.state?.available
   const routeAllowed = value.mode !== "external" && !["custom", "upload"].includes(value.source)

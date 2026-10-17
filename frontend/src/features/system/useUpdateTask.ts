@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { SystemError } from "@/api/systemClient"
 
 type UpdateState = { busy: boolean; phase: string }
 
@@ -41,6 +42,7 @@ export function useUpdateTask<T extends UpdateState>({ active, read, message, on
           if (next.busy || request.current) interval = 1000
         }
       } catch (error) {
+        interval = 1000
         if (!abort.signal.aborted && version === generation.current) setReadError(message(error as Error))
       }
       if (!abort.signal.aborted) timer = setTimeout(() => void poll(), interval)
@@ -63,16 +65,24 @@ export function useUpdateTask<T extends UpdateState>({ active, read, message, on
       await operation(abort.signal)
       if (abort.signal.aborted) return
       generation.current++
-      const next = await read(abort.signal)
-      if (!abort.signal.aborted) accept(next)
+      try {
+        const next = await read(abort.signal)
+        if (!abort.signal.aborted) accept(next)
+      } catch (error) {
+        if (!abort.signal.aborted) setReadError(message(error as Error))
+      }
     } catch (error) {
-      if (!abort.signal.aborted) setError(message(error as Error))
+      if (!abort.signal.aborted) {
+        if (error instanceof SystemError && error.code === "update_request_unconfirmed") setReadError(message(error))
+        else setError(message(error as Error))
+      }
     } finally {
       if (request.current === abort) {
         request.current = null
         if (!abort.signal.aborted) {
           setSending(false)
           onBusyChange(Boolean(latestState.current?.busy))
+          setRetry(value => value + 1)
         }
       }
     }

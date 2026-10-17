@@ -43,7 +43,7 @@ export function CoreUpdateCard({ active, settings, disabled, onRefresh, onBusyCh
   const current = conclusion === "当前已是最新版本"
   const available = conclusion.startsWith("发现新版本")
   const operation = state && state.phase !== "idle" && state.phase !== "checking"
-  const title = readError ? "版本状态暂不可用" : state?.candidate ? state.candidate.version + " 已准备就绪"
+  const title = readError ? "正在重新连接更新服务" : state?.candidate ? state.candidate.version + " 已准备就绪"
     : operation && !(state.phase === "failed" && state.checkState === "failed") ? phases[state.phase] : conclusion
   const warning = Boolean(readError || state?.phase === "failed" || state?.phase === "rolled-back" || (!current && !available && !busy && !state?.candidate))
   const showNotes = Boolean(state?.latest && !confirmation && !showUpload && !state?.candidate && !operation)
@@ -81,9 +81,12 @@ export function CoreUpdateCard({ active, settings, disabled, onRefresh, onBusyCh
         {state.bytes > 0 && " " + formatBytes(state.bytes) + (state.total ? " / " + formatBytes(state.total) + "（" + Math.min(100, Math.round(state.bytes / state.total * 100)) + "%）" : "")}
         {switching && " 版本切换会短暂中断代理连接，正在确认核心恢复。"}
       </CardDescription>}
-      {(error || readError || state?.error) && <Alert variant="destructive"><AlertDescription>
-        {error || readError || coreUpdateError(state?.error ?? null)} 可调整连接方式或来源后重试。
-        {readError && <Button variant="outline" size="lg" onClick={refresh}>重新读取状态</Button>}
+      {(error || state?.error) && <Alert variant="destructive"><AlertDescription>
+        {error || coreUpdateError(state?.error ?? null)} 可调整连接方式或来源后重试。
+      </AlertDescription></Alert>}
+      {readError && <Alert><AlertDescription>
+        正在重新连接更新服务，连接恢复后自动确认任务结果。
+        <Button variant="outline" size="lg" onClick={refresh}>重新读取状态</Button>
       </AlertDescription></Alert>}
       {state?.candidate && !showUpload && <div className="flex flex-col gap-2">
         <StatusBadge status={state.candidate.verification === "official" ? "success" : "warning"}>{state.candidate.verification === "official" ? "官方 SHA256 已核对" : "未核对官方摘要"}</StatusBadge>

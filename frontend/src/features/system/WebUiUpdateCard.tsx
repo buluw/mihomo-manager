@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils"
 import { coreVersionConclusion } from "./coreVersionCheck"
 import { downloadRoutes, downloadSources, type DownloadSettings } from "./UpdateSettings"
 import { useUpdateTask } from "./useUpdateTask"
+import { useWebUiRefresh } from "./useWebUiRefresh"
 import { UpdateCard, UpdateCardStatus, updateActionsClassName, updateButtonClassName } from "./UpdateCard"
 
 const phases = { idle: "等待准备", checking: "查询官方稳定版", downloading: "正在下载运行包", uploading: "上传中", validating: "校验中",
@@ -23,10 +24,11 @@ const phases = { idle: "等待准备", checking: "查询官方稳定版", downlo
   "rolled-back": "已恢复上一程序", failed: "操作失败" }
 type Confirmation = { action: "install" | "rollback"; version: string; sha256: string; verification?: "official" | "local" }
 
-export function WebUiUpdateCard({ active, settings, disabled, onBusyChange }: {
-  active: boolean; settings: DownloadSettings; disabled: boolean; onBusyChange: (busy: boolean) => void
+export function WebUiUpdateCard({ active, settings, disabled, refreshBlocked, onBusyChange }: {
+  active: boolean; settings: DownloadSettings; disabled: boolean; refreshBlocked: boolean; onBusyChange: (busy: boolean) => void
 }) {
   const { state, busy, error, readError, run, refresh } = useUpdateTask({ active, read: readWebUiUpdate, message: webUiRequestMessage, onBusyChange })
+  const page = useWebUiRefresh(state, !readError && !error, busy || disabled, refreshBlocked)
   const [file, setFile] = useState<File | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
@@ -79,13 +81,20 @@ export function WebUiUpdateCard({ active, settings, disabled, onBusyChange }: {
         {state.bytes > 0 && " " + formatBytes(state.bytes) + (state.total ? " / " + formatBytes(state.total) : "")}
         {switching && " 管理器服务正在更新，页面会自动重连并查询结果。"}
       </CardDescription>}
-      {(error || readError || state?.error) && <Alert variant="destructive"><AlertDescription>
-        {error || readError || webUiUpdateError(state?.error ?? null)}
-        {readError && <Button variant="outline" size="lg" onClick={refresh}>重新读取状态</Button>}
+      {(error || state?.error) && <Alert variant="destructive"><AlertDescription>
+        {error || webUiUpdateError(state?.error ?? null)}
+      </AlertDescription></Alert>}
+      {readError && <Alert><AlertDescription>
+        正在重新连接更新服务，连接恢复后自动确认任务结果。
+        <Button variant="outline" size="lg" onClick={refresh}>重新读取状态</Button>
       </AlertDescription></Alert>}
       {state?.install?.finishedAt && !state.error && <CardDescription>
-        完成于 {new Date(state.install.finishedAt).toLocaleString("zh-CN", { hour12: false })}。请完成当前编辑后刷新浏览器以使用新的页面资源。
+        完成于 {new Date(state.install.finishedAt).toLocaleString("zh-CN", { hour12: false })}。
       </CardDescription>}
+      {page.required && <Alert><AlertDescription>
+        更新已完成。{page.protectedEditing ? "当前编辑或写入已保留，请完成后刷新页面。" : "刷新页面以使用新的页面资源。"}
+        <Button variant="outline" size="lg" disabled={page.protectedEditing || busy || disabled || Boolean(readError || error || state?.error)} onClick={page.refresh}>刷新页面</Button>
+      </AlertDescription></Alert>}
       {state?.candidate && !showUpload && <div className="flex flex-col gap-2">
         <StatusBadge status={state.candidate.verification === "official" ? "success" : "warning"}>{state.candidate.verification === "official" ? "官方 SHA256 已核对" : "本地运行包已校验"}</StatusBadge>
         <CardDescription>{state.candidate.platform} {state.candidate.arch} · Node {state.candidate.node}{state.candidate.dirty && " · 工作区候选"}</CardDescription>

@@ -56,7 +56,7 @@ async function snapshot(source, target) {
     await cp(join(source, scope), join(target, scope), { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true });
   }
 }
-async function readableTree(path) {
+export async function readableTree(path) {
   const info = await lstat(path);
   if (info.isSymbolicLink()) fail('webui_invalid_program');
   if (info.isDirectory()) {
@@ -85,9 +85,10 @@ export async function recoverWebUi(paths, operations) {
     const old = join(paths.privateDirectory, 'transaction', 'old-image');
     const previous = join(paths.privateDirectory, 'previous');
     if (existsSync(old)) {
+      await readableTree(old);
       if (existsSync(previous)) await rename(previous, join(paths.privateDirectory, 'transaction', 'retired'));
       await rename(old, previous);
-    }
+    } else await readableTree(previous);
     await atomicJson(join(paths.stateDirectory, 'status.json'), journal.status);
     await rm(join(paths.privateDirectory, 'transaction'), { recursive: true, force: true });
     await rm(join(paths.privateDirectory, 'transaction.json'), { force: true });
