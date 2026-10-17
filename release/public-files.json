@@ -352,7 +352,6 @@
     "pve/manage.py",
     "pve/sanitize.py",
     "pve/template.json",
-    "release/README.md",
     "release/dependencies.json",
     "release/notices.mjs",
     "release/package.d.mts",
