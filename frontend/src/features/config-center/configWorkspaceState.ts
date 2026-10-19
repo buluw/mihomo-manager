@@ -16,8 +16,8 @@ export function configApplyControl(options: {
     label,
     icon: switching ? "switch" as const : "apply" as const,
     completed: switching ? "已切换配置" : "已应用配置",
-    disabled: !options.activeName || options.dirty,
-    reason: options.dirty ? "请先保存配置" : options.loadedName ? null : `运行来源未知；${label}将加载所选配置`,
+    disabled: !options.activeName,
+    reason: options.dirty ? "保存当前草稿并应用整份配置" : options.loadedName ? null : `运行来源未知；${label}将加载所选配置`,
   }
 }
 

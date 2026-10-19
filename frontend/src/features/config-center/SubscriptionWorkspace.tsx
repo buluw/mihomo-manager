@@ -49,6 +49,7 @@ export function SubscriptionWorkspace({
   onOpenDetail: () => void
   children: (view: {
     resources: ReactNode
+    toolbar: ReactNode
     mobileResources: ReactNode
     editor: () => ReactNode
     status: ReactNode
@@ -73,10 +74,8 @@ export function SubscriptionWorkspace({
 
   return children({
     resources: resourceList(),
-    mobileResources: resourceList(true),
-    editor: () => (
-      <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
-        <WorkspaceToolbar variant="resource-editor">
+    toolbar: (        <WorkspaceToolbar variant="resource-editor" className="flex-wrap">
+          <span className="min-w-0 flex-1 basis-full truncate md:basis-auto">{subscription.form.name || "订阅设置"}</span>
           <Button variant="outline" size="sm" className="hidden md:inline-flex" disabled={subscription.unavailable || subscription.writeLocked} onClick={() => void createDraft()}><Plus data-icon="inline-start" />新增订阅</Button>
           {subscription.dirty && (
             <span className="hidden shrink-0 items-center gap-1.5 text-xs text-status-warning sm:flex">
@@ -133,7 +132,11 @@ export function SubscriptionWorkspace({
               <span>保存</span>
             </Button>
           </div>
-        </WorkspaceToolbar>
+        </WorkspaceToolbar>),
+    mobileResources: resourceList(true),
+    editor: () => (
+      <div className="grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] overflow-hidden">
+
         <div className="min-h-0 min-w-0 overflow-hidden">
           {subscription.unavailable ? (
             <div className="flex h-full items-center justify-center p-5">

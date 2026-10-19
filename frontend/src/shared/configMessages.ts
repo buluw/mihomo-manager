@@ -34,7 +34,7 @@ export function configValidationErrorMessage(error: unknown) {
 }
 
 export function providerFileIssueLabel(status: ProviderFileIssue["status"]) {
-  return status === "missing" ? "缺少文件" : status === "outside_scope" ? "超出可读取范围" : "文件不可读";
+  return status === "missing" ? "缺少文件" : status === "outside_scope" ? "超出可读取范围" : status === "conflict" ? "集合文件路径冲突" : status === "ownership_unknown" ? "旧文件归属无法确认" : "文件不可读";
 }
 
 export function providerFilesErrorMessage(error: unknown) {

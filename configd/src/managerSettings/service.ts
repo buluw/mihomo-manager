@@ -265,7 +265,7 @@ export class ManagerSettingsService {
       if (source.sha256 !== input.expectedSourceSha256) throw new ConfigConflictError("source configuration changed");
       const settings = await this.read();
       if (settings.version !== expected) throw new ManagerSettingsConflictError("manager settings changed");
-      const content = generateRuntimeContent(source.content, settings.overrides);
+      const content = generateRuntimeContent(await this.options.store.mapProviderContent(source.name, source.content), settings.overrides);
       await prepareSource?.(source.name, source.sha256);
       const contentSha256 = sha256(content);
       const generationVersion = sha256(JSON.stringify([source.name, source.sha256, settings.version, contentSha256]));

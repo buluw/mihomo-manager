@@ -24,6 +24,7 @@ export interface ConfigSnapshot {
   content: string;
   sha256: string;
   providerIssues?: ProviderFileIssue[];
+  collectionPaths?: Array<{ category: "proxy" | "rule"; name: string; sourcePath: string; fileName: string | null; referencePath: string | null; writable?: boolean; status?: ProviderFileIssue["status"] }>;
   collectionPathChanges?: CollectionPathChange[];
   subscriptionManaged?: boolean;
   subscriptionId?: string | null;
@@ -34,7 +35,7 @@ export interface ConfigSnapshot {
 export interface ProviderFileIssue {
   category: "proxy" | "rule";
   name: string;
-  status: "missing" | "outside_scope" | "unreadable";
+  status: "missing" | "outside_scope" | "unreadable" | "conflict" | "ownership_unknown";
 }
 
 export type CollectionPathChange = { category: "proxy" | "rule"; name: string; fromPath: string; toPath: string; fileSha256: string };
@@ -356,6 +357,7 @@ export type GeneratedRuntime = {
 
 export type RuntimeLoadResult = "succeeded" | "failed" | "unknown";
 export type RuntimeLoadState = {
+  collectionCleanup?: Array<Pick<ProviderCleanupItem, "fileName" | "action" | "reason"> & Partial<ProviderCleanupItem>>;
   schemaVersion: 1;
   version: number;
   lastAttempt: {
@@ -453,6 +455,16 @@ export function saveConfigFile(name: string, content: string, expectedSha256: st
     },
     LONG_OPERATION_TIMEOUT_MS,
   );
+}
+
+export function saveCollectionWorkspace(name: string, input: { content: string; expectedSha256: string;
+  bodies: Array<{ category: CollectionCategory; name: string; content: string; expectedSha256: string | null }>;
+  removals: Array<{ category: CollectionCategory; name: string }>; httpProviders?: Array<{ category: CollectionCategory; name: string }> }) {
+  return configApi<ConfigSnapshot>(`/files/${encodeURIComponent(name)}/collections`, { method: "PUT", body: JSON.stringify(input) }, LONG_OPERATION_TIMEOUT_MS);
+}
+
+export function validateCollectionWorkspace(name: string, input: Parameters<typeof saveCollectionWorkspace>[1]) {
+  return configApi<{ valid: true }>(`/files/${encodeURIComponent(name)}/collections/validate`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export interface ProviderCleanupItem {
@@ -905,11 +917,11 @@ export function saveProxyNodeInfo(input: {
   );
 }
 
-export function validateConfig(content: string, signal?: AbortSignal) {
+export function validateConfig(content: string, signal?: AbortSignal, sourceName?: string) {
   // 候选配置校验可能等待 Mihomo 子进程，需覆盖服务端默认校验时限及网络余量。
   return configApi<{ valid: true }>("/validate", {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, sourceName }),
     ...(signal ? { signal } : {}),
   }, LONG_OPERATION_TIMEOUT_MS);
 }

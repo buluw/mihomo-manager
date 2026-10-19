@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
+import { lstatSync } from "node:fs";
+import { lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ProviderFileConflictError, ProviderFileNameError, ProviderFileReadOnlyError, ProviderFileRecoveryError, ProviderFileValidationError } from "./errors.js";
 
@@ -223,12 +224,47 @@ export function sameFileIdentity(left: { device: number | bigint; inode: number 
 }
 
 export const FILE_NAME_PATTERN = /^(?!\.)[\p{L}\p{N}][\p{L}\p{N}._ -]{0,118}\.ya?ml$/iu;
+export const COLLECTION_SCOPE = /^config-[a-f0-9]{24}$/;
+export const collectionScope = (name: string) => `config-${hash(name).slice(0, 24)}`;
+
+export function validProviderKey(value: string) {
+  const parts = value.split("/");
+  return parts.length === 1 ? FILE_NAME_PATTERN.test(value)
+    : parts.length === 2 && COLLECTION_SCOPE.test(parts[0]!) && FILE_NAME_PATTERN.test(parts[1]!);
+}
+
+export async function providerFileKeys(root: string) {
+  const keys: string[] = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (entry.isFile() && FILE_NAME_PATTERN.test(entry.name)) keys.push(entry.name);
+    else if (entry.isDirectory() && COLLECTION_SCOPE.test(entry.name)) {
+      for (const file of await readdir(join(root, entry.name), { withFileTypes: true })) {
+        if (file.isFile() && FILE_NAME_PATTERN.test(file.name)) keys.push(`${entry.name}/${file.name}`);
+      }
+    }
+  }
+  return keys;
+}
+
+export async function ensureProviderParent(root: string, fileName: string) {
+  providerFilePath(root, fileName);
+  if (!fileName.includes("/")) return;
+  const directory = join(root, fileName.split("/")[0]!);
+  await mkdir(directory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+  providerFilePath(root, fileName);
+}
 
 export function providerFilePath(root: string, fileName: string) {
   if (
-    fileName.trim() !== fileName || !FILE_NAME_PATTERN.test(fileName) ||
-    ![".yaml", ".yml"].includes(extname(fileName).toLowerCase()) || basename(fileName) !== fileName
+    fileName.trim() !== fileName || !validProviderKey(fileName) ||
+    ![".yaml", ".yml"].includes(extname(fileName).toLowerCase()) || fileName.includes("\\")
   ) throw new ProviderFileNameError("invalid provider file name");
+  if (fileName.includes("/")) {
+    try {
+      const metadata = lstatSync(join(root, fileName.split("/")[0]!));
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new ProviderFileNameError("provider directory is unavailable");
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
   const path = resolve(root, fileName);
   if (!isWithin(root, path)) throw new ProviderFileNameError("provider path is outside the controlled directory");
   return path;

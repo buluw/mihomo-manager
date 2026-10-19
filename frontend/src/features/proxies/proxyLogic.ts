@@ -4,6 +4,7 @@ import type { ProxyAddresses, ProxyMergeSettings, ProxyNodeGroup, ProxyNodeIdent
 import { proxyIdentityKey } from "./proxyMergeSettings.ts";
 import { manualProxyRegion } from "./proxyNodeInfo.ts";
 import { directDelayTestUrl } from "../../shared/directDelay.ts";
+import { ControllerDelayError, type ControllerDelayFailure } from "../../api/controllerClient.ts";
 
 export const PROXY_DELAY_TEST_URL = "http://www.gstatic.com/generate_204";
 export const DIRECT_DELAY_TEST_URL = directDelayTestUrl();
@@ -11,6 +12,7 @@ export const DIRECT_DELAY_TEST_URL = directDelayTestUrl();
 export type ProxyDelaySample = {
   delay: number | null;
   testedAt: number;
+  failure?: ControllerDelayFailure;
 };
 
 export type ProxySortKey = "name" | "protocol" | "region" | "latency";
@@ -124,18 +126,20 @@ export function proxyDelayTarget(name: string, data: Record<string, Json>) {
   return name;
 }
 
-export function requestProxyDelay(
-  pending: Map<string, Promise<number>>,
-  identity: string,
-  request: () => Promise<number>,
-) {
-  const current = pending.get(identity);
-  if (current) return current;
-  const running = Promise.resolve().then(request).finally(() => {
-    if (pending.get(identity) === running) pending.delete(identity);
-  });
-  pending.set(identity, running);
-  return running;
+export function proxyDelayIdentity(name: string, data: Record<string, Json>, providerByNode: Record<string, string>) {
+  const target = proxyDelayTarget(name, data);
+  return proxyIdentityKey({ provider: providerByNode[target] || "", name: target });
+}
+
+export function uniqueProxyDelayTargets(names: string[], data: Record<string, Json>, providerByNode: Record<string, string>) {
+  const targets = new Map<string, { name: string }>();
+  for (const name of names) targets.set(proxyDelayIdentity(name, data, providerByNode), { name: proxyDelayTarget(name, data) });
+  return [...targets.values()];
+}
+
+export function proxyDelayFailure(error: unknown): ControllerDelayFailure {
+  if (error instanceof ControllerDelayError) return error.kind;
+  return error instanceof Error && error.name === "TimeoutError" ? "timeout" : "api";
 }
 
 export function proxyRegionDisplayLabel(region: string | null) {
@@ -174,11 +178,25 @@ export function proxyCardDisplayLabel(card: ProxyCardModel, selectedName: string
   return card.label.trim() || selectedName;
 }
 
+export function proxyProtocolDisplayName(protocol: string) {
+  return protocol.trim().toUpperCase() || "未知";
+}
+
+export function isCurrentProxyCard(card: ProxyCardModel, currentName: string | undefined) {
+  return card.members.some((member) => member.name === currentName);
+}
+
+export function proxyDelayFailureLabel(sample: ProxyDelaySample) {
+  if (sample.delay) return null;
+  if (sample.failure === "api") return "接口错误";
+  return sample.failure || sample.testedAt > 0 ? "嘎了" : null;
+}
+
 export function proxyProtocolOptionColumns(name: string, protocol: string, sample: ProxyDelaySample) {
   return {
     name,
-    protocol,
-    delayLabel: sample.delay ? `${sample.delay} ms` : sample.testedAt > 0 ? "失败" : "---",
+    protocol: proxyProtocolDisplayName(protocol),
+    delayLabel: sample.delay ? `${sample.delay} ms` : proxyDelayFailureLabel(sample) ?? "---",
   };
 }
 
@@ -296,19 +314,22 @@ export function measurableProxyCardMembers(
 export async function runProxyCardDelayTests<T extends { name: string }>(
   members: T[],
   request: (member: T) => Promise<number>,
-  publish: (name: string, delay: number | null) => void,
 ) {
   let succeeded = 0;
+  let cancelled = 0;
+  const failures: Record<ControllerDelayFailure, number> = { timeout: 0, api: 0, unreachable: 0 };
   await Promise.allSettled(members.map(async (member) => {
     try {
       const delay = await request(member);
-      publish(member.name, delay > 0 ? delay : null);
-      if (delay > 0) succeeded++;
-    } catch {
-      publish(member.name, null);
+      if (!(delay > 0)) throw new ControllerDelayError("unreachable");
+      succeeded++;
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") { cancelled++; return; }
+      const failure = proxyDelayFailure(error);
+      failures[failure]++;
     }
   }));
-  return { succeeded, failed: members.length - succeeded };
+  return { succeeded, failed: failures.timeout + failures.api + failures.unreachable, failures, cancelled };
 }
 
 export function setProxyGroupSelection(
@@ -369,8 +390,8 @@ export function sortProxyCards(
         proxyCardRegion(rightName, providerByNode, addresses, nodeSettings) || "",
       ],
       latency: [
-        displayedProxyDelay(proxyMap[leftName], delays[leftName]) ?? Number.MAX_SAFE_INTEGER,
-        displayedProxyDelay(proxyMap[rightName], delays[rightName]) ?? Number.MAX_SAFE_INTEGER,
+        displayedProxyDelay(proxyMap[leftName], delays[proxyDelayTarget(leftName, proxyMap)]) ?? Number.MAX_SAFE_INTEGER,
+        displayedProxyDelay(proxyMap[rightName], delays[proxyDelayTarget(rightName, proxyMap)]) ?? Number.MAX_SAFE_INTEGER,
       ],
     };
     const [a, b] = values[sortKey];

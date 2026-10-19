@@ -31,6 +31,7 @@ import {
   type ProviderFileIssue,
 } from "./errors.js";
 import { WriteQueue } from "../writeQueue.js";
+import { mappedCollectionContent, type CollectionPath } from "../providerFiles/collectionPaths.js";
 
 export interface ConfigStoreOptions {
   configPath: string;
@@ -51,6 +52,7 @@ export interface ConfigSnapshot {
   content: string;
   sha256: string;
   providerIssues?: ProviderFileIssue[];
+  collectionPaths?: CollectionPath[];
 }
 
 export interface ConfigFileRecord {
@@ -84,6 +86,7 @@ function isWithin(root: string, target: string) {
 const CONFIG_NAME_PATTERN = /^(?!\.)[\p{L}\p{N}][\p{L}\p{N}._ -]{0,118}\.ya?ml$/iu;
 
 export class ConfigStore {
+  resolveProviderPaths?: (name: string, content: string) => Promise<CollectionPath[]>;
   readonly options: ConfigStoreOptions;
   private readonly writeQueue: WriteQueue;
 
@@ -144,7 +147,10 @@ export class ConfigStore {
 
   // File dependencies are checked independently of Core validation so incomplete
   // imports can be saved and repaired, while HTTP caches remain Core's concern.
-  async providerIssues(content: string): Promise<ProviderFileIssue[]> {
+  async providerIssues(content: string, configName?: string): Promise<ProviderFileIssue[]> {
+    if (configName && this.resolveProviderPaths) {
+      return (await this.resolveProviderPaths(configName, content)).flatMap(({ category, name, status }) => status ? [{ category, name, status }] : []);
+    }
     const document = parseDocument(content);
     if (document.errors.length) return [];
     let root: Record<string, unknown> | null;
@@ -191,8 +197,14 @@ export class ConfigStore {
   }
 
   private async withProviderIssues(snapshot: ConfigSnapshot): Promise<ConfigSnapshot> {
-    const issues = await this.providerIssues(snapshot.content);
-    return issues.length ? { ...snapshot, providerIssues: issues } : snapshot;
+    const collectionPaths = await this.resolveProviderPaths?.(snapshot.name, snapshot.content);
+    const issues = collectionPaths ? collectionPaths.flatMap(({ category, name, status }) => status ? [{ category, name, status }] : [])
+      : await this.providerIssues(snapshot.content);
+    return { ...snapshot, ...(collectionPaths ? { collectionPaths } : {}), ...(issues.length ? { providerIssues: issues } : {}) };
+  }
+
+  async mapProviderContent(name: string, content: string) {
+    return mappedCollectionContent(content, await this.resolveProviderPaths?.(name, content) ?? []);
   }
 
   private async sourceNeedsCoreValidation(content: string) {
@@ -318,9 +330,10 @@ export class ConfigStore {
 
   async readProviderPayload(category: "proxy" | "rule", name: string, configName = this.defaultName, expectedSha256?: string): Promise<string> {
     const { configContent, provider, pair } = await this.providerSource(category, name, configName, expectedSha256);
-    const configuredPath = provider.path;
+    const mapping = (await this.resolveProviderPaths?.(configName, configContent))?.find((entry) => entry.category === category && entry.name === name);
+    const configuredPath = mapping?.referencePath ?? provider.path;
     if (provider.type === "file") {
-      const status = await this.providerFileStatus(configuredPath);
+      const status = mapping?.status ?? await this.providerFileStatus(configuredPath);
       if (status) throw new ConfigProviderFilesError([{ category, name, status }]);
     }
     if (typeof configuredPath !== "string" || !configuredPath.trim()) {
@@ -501,11 +514,12 @@ export class ConfigStore {
     }
   }
 
-  async validate(content: string) {
+  async validate(content: string, sourceName?: string) {
     await this.writeQueue.enqueue(async () => {
-      const issues = await this.providerIssues(content);
+      if (sourceName) this.pathForName(sourceName);
+      const issues = await this.providerIssues(content, sourceName);
       if (issues.length) throw new ConfigProviderFilesError(issues);
-      await this.withCandidate(content, async () => undefined);
+      await this.withCandidate(sourceName ? await this.mapProviderContent(sourceName, content) : content, async () => undefined);
     });
   }
 

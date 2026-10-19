@@ -12,13 +12,20 @@ import { proxyProtocolOptionColumns, type ProxyDelaySample } from "./proxyLogic"
 
 export type ProxyProtocolOption = { name: string; protocol: string; delaySample: ProxyDelaySample };
 
-export function ProxyProtocolPicker({ name, label, protocol, options, onChoose }: {
+export function ProxyProtocolPicker({ name, label, protocol, options, onChoose, variant = "list" }: {
   name: string;
   label: string;
   protocol: string;
   options: ProxyProtocolOption[];
   onChoose: (name: string) => Promise<boolean>;
+  variant?: "list" | "card";
 }) {
+  const cardStyle = variant === "card";
+  const cardClasses = "group/protocol pointer-events-auto h-11 min-w-11 w-fit max-w-full justify-self-start justify-start rounded-md border-0 bg-transparent p-0 text-muted-foreground hover:bg-transparent aria-expanded:bg-transparent dark:hover:bg-transparent active:translate-y-0 has-data-[icon=inline-end]:pr-0 max-md:[&_svg:not([class*=size-])]:size-2.5";
+  const cardLabel = <span className="inline-flex min-w-0 items-center gap-0.5 text-[11px] leading-5 font-medium transition-colors group-hover/protocol:text-foreground group-aria-expanded/protocol:text-foreground md:gap-[5px] md:text-xs">
+    <span className="truncate underline-offset-4 group-hover/protocol:underline group-aria-expanded/protocol:underline">{protocol}</span>
+    <ChevronDown data-icon="inline-end" className="opacity-65 transition-transform group-aria-expanded/protocol:rotate-180" />
+  </span>;
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const pendingRef = useRef(false);
@@ -33,8 +40,8 @@ export function ProxyProtocolPicker({ name, label, protocol, options, onChoose }
   return (
     <>
       <Sheet open={open} onOpenChange={(next) => { if (!pendingRef.current) setOpen(next); }}>
-        <SheetTrigger onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} render={<Button variant="ghost" size="sm" className="col-start-1 row-start-1 h-11 max-w-36 min-w-0 justify-start px-0 sm:hidden" aria-label={`${label} 当前协议 ${protocol}`} />}>
-          <ChevronDown data-icon="inline-start" /><span className="truncate">{protocol}</span>
+        <SheetTrigger onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} render={<Button variant="ghost" size="sm" className={cardStyle ? cn(cardClasses, "md:hidden") : "col-start-1 row-start-1 h-11 max-w-[70%] min-w-0 shrink justify-start px-0 sm:hidden"} aria-label={`${label} 当前协议 ${protocol}`} />}>
+          {cardStyle ? cardLabel : <><ChevronDown data-icon="inline-start" /><span className="truncate">{protocol}</span></>}
         </SheetTrigger>
         <MobileSheetContent title={"选择协议 · " + label} bodyClassName="flex flex-col gap-1" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
           {options.map(option => {
@@ -45,8 +52,8 @@ export function ProxyProtocolPicker({ name, label, protocol, options, onChoose }
         </MobileSheetContent>
       </Sheet>
       <DropdownMenu>
-        <DropdownMenuTrigger onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} render={<Button variant="ghost" size="sm" className="col-start-3 row-start-1 hidden h-7 w-full min-w-0 justify-start justify-self-stretch rounded-sm px-4 text-[13px] text-foreground hover:bg-transparent hover:text-mode-rule aria-expanded:bg-transparent dark:hover:bg-transparent sm:flex" aria-label={`${label} 当前协议 ${protocol}`} />}>
-          <span className="flex w-4 shrink-0 items-center justify-center"><ChevronDown /></span><span className="truncate text-left">{protocol}</span>
+        <DropdownMenuTrigger onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} render={<Button variant="ghost" size="sm" className={cardStyle ? cn(cardClasses, "hidden md:flex") : "col-start-3 row-start-1 hidden h-7 w-full min-w-0 justify-start justify-self-stretch rounded-sm px-4 text-[13px] text-foreground hover:bg-transparent hover:text-mode-rule aria-expanded:bg-transparent dark:hover:bg-transparent sm:flex"} aria-label={`${label} 当前协议 ${protocol}`} />}>
+          {cardStyle ? cardLabel : <><span className="flex w-4 shrink-0 items-center justify-center"><ChevronDown /></span><span className="truncate text-left">{protocol}</span></>}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="center" className="w-[min(24rem,calc(100vw-1rem))]">
           <DropdownMenuGroup>

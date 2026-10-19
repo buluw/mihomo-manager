@@ -2,20 +2,7 @@ import { proxyCollectionCount, ruleCollectionCount } from "../../shared/collecti
 import { isMap, isSeq, parseDocument, stringify } from "yaml"
 import { addHttpProviderConfig } from "./managedProviderYaml.ts"
 import { type ManagedProviderItem } from "./managedProviderModel.ts"
-import type { CollectionCategory, ConfigSnapshot, ProxyCollectionInput } from "../../api/configClient.ts"
-
-export function latestMissingCollectionDeclaration(input: ProxyCollectionInput, source: ConfigSnapshot) {
-  const category = input.category ?? "proxy"
-  const document = parseDocument(source.content)
-  const declaration = document.getIn([`${category}-providers`, input.name], true)
-  if (document.errors.length || !isMap(declaration) || declaration.get("type") !== "file" ||
-    !source.providerIssues?.some((issue) => issue.category === category && issue.name === input.name && issue.status === "missing")) {
-    throw new Error("最新配置中的目标已变化，请重新核对集合；输入已保留")
-  }
-  const snippet = stringify({ [input.name]: declaration.toJSON() }, { lineWidth: 0 })
-  readUploadDeclaration(snippet, category)
-  return snippet
-}
+import type { CollectionCategory, ProxyCollectionInput } from "../../api/configClient.ts"
 
 export function readUploadDeclaration(snippet: string, category: CollectionCategory) {
   const document = parseDocument(snippet)
@@ -41,7 +28,7 @@ export function patchUploadDeclaration(snippet: string, category: CollectionCate
   return stringify({ [patch.name ?? name]: { ...declaration, ...(category === "rule" && patch.behavior ? { behavior: patch.behavior } : {}) } }, { lineWidth: 0 })
 }
 
-export function createCollectionDraft(content: string, input: ProxyCollectionInput, type: "inline" | "file" | "http", url: string, category: CollectionCategory = "proxy", filePath?: string) {
+export function createCollectionDraft(content: string, input: ProxyCollectionInput, type: "inline" | "file" | "http", url: string, category: CollectionCategory = "proxy", filePath?: string, fileDeclaration?: Record<string, unknown>) {
   const name = input.name.trim()
   const source = parseDocument(content)
   if (source.errors.length || !isMap(source.contents)) throw new Error("当前配置 YAML 无效")
@@ -64,9 +51,9 @@ export function createCollectionDraft(content: string, input: ProxyCollectionInp
     }
   } else if (type === "file") {
     if (!filePath) throw new Error("请选择受控集合文件")
-    declaration = category === "proxy"
+    declaration = fileDeclaration ?? (category === "proxy"
       ? { type: "file", path: filePath }
-      : { type: "file", behavior: input.behavior ?? "classical", format: "yaml", path: filePath }
+      : { type: "file", behavior: input.behavior ?? "classical", format: "yaml", path: filePath })
   } else {
     declaration = addHttpProviderConfig(content, category, name, url, {
       version: 0, ruleBehavior: input.behavior ?? "classical", ruleFormat: input.format ?? "yaml", interval: null, healthCheck: false,

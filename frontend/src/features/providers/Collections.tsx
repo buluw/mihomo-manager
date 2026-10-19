@@ -75,7 +75,7 @@ function CollectionWorkspacePage({ notify, target }: { notify: Notify; target: C
     }
     return true
   }
-  return <CollectionView category={category} onCategoryChange={switchCategory}
+  return <CollectionView
     sourceName={target.source ? `${target.source.name} · ${target.source.sha256.slice(0, 8)}` : workspace.snapshot?.name}
     status={workspace.identityStatus !== "ready" && !(workspace.identityStatus === "loading" && workspace.snapshot) ? workspace.message : workspace.dirty ? "未保存 · Core 尚未改变"
       : workspace.savedPending ? "已保存待应用 · Core 尚未改变" : target.source ? "集合来源：明确编辑配置" : "集合来源：最近成功加载配置"}>

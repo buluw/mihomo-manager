@@ -16,7 +16,7 @@ export class ProviderSourceNotFoundError extends Error {}
 export interface ProviderFileIssue {
   category: "proxy" | "rule";
   name: string;
-  status: "missing" | "outside_scope" | "unreadable";
+  status: "missing" | "outside_scope" | "unreadable" | "conflict" | "ownership_unknown";
 }
 export class ConfigProviderFilesError extends Error {
   constructor(readonly issues: ProviderFileIssue[]) {

@@ -23,9 +23,9 @@ export function ConfigCategoryPicker({ section, disabled, onChoose }: {
     </Button>} />
 }
 
-export function ConfigDetailHeader({ title, onBack }: { title: string; onBack: () => void }) {
+export function ConfigDetailHeader({ title, onBack, disabled }: { title: string; onBack: () => void; disabled?: boolean }) {
   return <div className="flex min-h-17 shrink-0 items-center gap-2 border-b px-4 py-3 md:hidden">
-    <Button variant="ghost" size="icon" aria-label="返回列表" className="size-11 shrink-0" onClick={onBack}><ArrowLeft /></Button>
+    <Button variant="ghost" size="icon" aria-label="返回列表" className="size-11 shrink-0" onClick={onBack} disabled={disabled}><ArrowLeft /></Button>
     <span className="min-w-0 text-sm font-medium wrap-anywhere">{title}</span>
   </div>
 }

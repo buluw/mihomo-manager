@@ -6,13 +6,15 @@ import { recordValue } from "./collectionYaml.js";
 import { isWithin, providerFileNameKey, readControlledFile, sameFileIdentity } from "./controlledFiles.js";
 import { ProviderFileReferencedError, ProviderFileValidationError, ProviderRuntimeReferenceError, type ProviderConfigReference } from "./errors.js";
 import type { ProviderPathReference, ProviderRuntimeDependencies, ProviderRuntimeReferences } from "./types.js";
+import { mappedCollectionContent } from "./collectionPaths.js";
 
 export type ConfigReferenceSource = { config: Record<string, unknown> | null; unreadable: boolean };
 
 export async function readConfigReferenceSource(name: string,
   store: Pick<ConfigStore, "read">): Promise<ConfigReferenceSource> {
   try {
-    const content = (await store.read(name)).content;
+    const snapshot = await store.read(name);
+    const content = mappedCollectionContent(snapshot.content, snapshot.collectionPaths ?? []);
     const config = recordValue(parse(content));
     return { config, unreadable: !config && Boolean(content.trim()) };
   } catch {

@@ -5,11 +5,10 @@ import { Navigate, useLocation, useNavigate, useSearchParams } from "react-route
 import { useRegisterPageRefresh } from "@/app/pageRefresh"
 import { useUiState } from "@/app/state/uiState"
 import { WorkspacePage } from "@/components/layout/page-frame"
-import { ResourceWorkspace } from "@/components/patterns/resource-workspace"
+import { ResourceWorkspace, ResourceWorkspaceLayout } from "@/components/patterns/resource-workspace"
 import {
   WorkspaceBody,
   WorkspaceCategoryTabs,
-  WorkspaceToolbar,
 } from "@/components/patterns/workspace"
 import { useDirtyGuard } from "@/hooks/useDirtyGuard"
 import type { Notify } from "@/shared/types"
@@ -96,7 +95,9 @@ export function ConfigCenterPage({ notify }: { notify: Notify }) {
     try {
       const fresh = await readConfigFile(source.name)
       if (fresh.sha256 !== source.sha256) { notify("配置版本已变化，请重新读取后编辑集合", "error"); return }
-      const target = item ?? fresh.providerIssues?.[0]
+      const target = item?.status === "missing" ? fresh.providerIssues?.find((issue) => issue.category === item.category && issue.name === item.name && issue.status === "missing")
+        : fresh.providerIssues?.find((issue) => issue.status === "missing")
+      if (!target) { notify("该配置没有缺失集合，请重新读取配置状态"); return }
       const destination = collectionEditLocation(source, target ? { category: target.category, name: target.name, repair: target.status === "missing" } : undefined)
       navigate(destination.pathname, { state: destination.state })
     } catch { notify("无法确认集合编辑目标，请重新读取配置", "error") }
@@ -153,19 +154,15 @@ export function ConfigCenterPage({ notify }: { notify: Notify }) {
 
   const subscriptionCount =
     subscription.items.length + (subscription.newDraft ? 1 : 0)
+  const categoryTabs = <WorkspaceCategoryTabs layout="list" value={section} disabled={pendingWrite} onValueChange={value => void requestSection(value as ConfigSection)} items={[{ value: "files", label: "配置文件", icon: FileText }, { value: "subscriptions", label: "订阅配置", icon: CloudDownload }, { value: "merge", label: "代理集提取", icon: FileInput }]} />
   const mobileListTitle = <ConfigCategoryPicker section={section} disabled={pendingWrite} onChoose={requestSection} />
 
   if (location.pathname === "/config-center" && searchParams.get("view") === "runtime") return <Navigate to="/runtime-config" replace />
 
   return (
-    <WorkspacePage className="max-md:grid-rows-[0_minmax(0,1fr)_auto] md:grid-rows-[auto_minmax(0,1fr)_28px]">
-      <WorkspaceToolbar variant="resource-tabs" className="max-md:h-0 max-md:min-h-0 max-md:border-0 max-md:p-0">
-        <WorkspaceCategoryTabs className="hidden md:flex" value={section} disabled={pendingWrite}
-          onValueChange={value => void requestSection(value as ConfigSection)}
-          items={[{ value: "files", label: "编辑配置", icon: FileText }, { value: "subscriptions", label: "订阅", icon: CloudDownload }, { value: "merge", label: "代理集提取", icon: FileInput }]} />
-      </WorkspaceToolbar>
-
-      <ConfigFileWorkspace workspace={config} onOpenCollections={openCollections} mobileListTitle={mobileListTitle} onOpenDetail={openDetail}>
+    <WorkspacePage className="grid-rows-[minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]">
+      <ResourceWorkspaceLayout>
+      <ConfigFileWorkspace onBack={backToList} workspace={config} onOpenCollections={openCollections} mobileListTitle={mobileListTitle} onOpenDetail={openDetail}>
         {(configView) => (
           <SubscriptionWorkspace
             workspace={subscription}
@@ -175,7 +172,7 @@ export function ConfigCenterPage({ notify }: { notify: Notify }) {
           >
             {(subscriptionView) => {
               if (section === "merge") {
-                return <WorkspaceBody><MergeConfigWorkspace subscriptions={subscription} configFiles={config.files} notify={notify} providerFiles={sharedProviderFiles} onProviderFilesCommit={setSharedProviderFiles} loadedName={config.loadedName} onGuardChange={setMergeGuard} mobileListTitle={mobileListTitle} mobileDetailOpen={mobileDetailOpen} onOpenDetail={openDetail} onBack={backToList} /></WorkspaceBody>
+                return <WorkspaceBody><MergeConfigWorkspace resourcesHeader={categoryTabs} subscriptions={subscription} configFiles={config.files} notify={notify} providerFiles={sharedProviderFiles} onProviderFilesCommit={setSharedProviderFiles} loadedName={config.loadedName} onGuardChange={setMergeGuard} mobileListTitle={mobileListTitle} mobileDetailOpen={mobileDetailOpen} onOpenDetail={openDetail} onBack={backToList} /></WorkspaceBody>
               }
               const activeView = section === "files" ? configView : subscriptionView
 
@@ -184,16 +181,18 @@ export function ConfigCenterPage({ notify }: { notify: Notify }) {
                   <WorkspaceBody>
                     <ResourceWorkspace
                       idPrefix="config-center"
+                      resourcesHeader={categoryTabs}
                       resources={activeView.resources}
                       mobileResources={activeView.mobileResources}
-                      mobileNavigation={{ detailOpen: mobileDetailOpen, header: <ConfigDetailHeader title={section === "files" ? config.activeName || "配置文件" : subscription.form.name || "新订阅"} onBack={backToList} /> }}
+                      toolbar={activeView.toolbar}
+                      status={activeView.status}
+                      mobileNavigation={{ detailOpen: mobileDetailOpen, header: section === "files" ? undefined : <ConfigDetailHeader title={subscription.form.name || "新订阅"} onBack={backToList} /> }}
                       resizeHandleLabel="调整资源列表宽度"
                     >
                       {activeView.editor}
                     </ResourceWorkspace>
                   </WorkspaceBody>
 
-                  <div className={mobileDetailOpen ? "min-w-0" : "min-w-0 max-md:hidden"}>{activeView.status}</div>
                   {activeView.deleteDialog}
                   {activeView.addDialog}
                 </>
@@ -202,6 +201,7 @@ export function ConfigCenterPage({ notify }: { notify: Notify }) {
           </SubscriptionWorkspace>
         )}
       </ConfigFileWorkspace>
+      </ResourceWorkspaceLayout>
     </WorkspacePage>
   )
 }

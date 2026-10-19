@@ -17,7 +17,10 @@ import { chmod, chown, link, lstat, mkdir, open, readdir, readFile, rename, stat
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isMap, isSeq, parse, parseDocument, stringify } from "yaml";
 import type { ConfigSnapshot, ConfigStore } from "../config/store.js";
-import { ConfigConflictError } from "../config/errors.js";
+import { ConfigConflictError, ConfigProviderFilesError, ConfigValidationError } from "../config/errors.js";
+import { saveWorkspace, recoverWorkspace, parseWorkspaceJournal, type WorkspaceJournal, type WorkspaceOperationContext, type CollectionBodyDraft, type CollectionRemoval, type PendingCollectionRemoval } from "./workspaceOperation.js";
+import { resolveCollectionPaths, mappedCollectionContent, controlledPathStatus } from "./collectionPaths.js";
+import { collectionScope, COLLECTION_SCOPE, validProviderKey, providerFileKeys, ensureProviderParent } from "./controlledFiles.js";
 import type { PublicSubscription } from "../subscriptions/types.js";
 import { WriteQueue } from "../writeQueue.js";
 import { validateProviderFilterRules } from "./extraction.js";
@@ -104,9 +107,14 @@ type ProviderFileState = {
   local: LocalProviderExtraction[];
   templates?: ProviderTemplateSettings;
   manualHttp?: ManagedHttpProviderRecord[];
-  collectionPreferences?: CollectionPreferences;
+  collectionPreferences?: CollectionPreferences | undefined;
   httpCachePaths?: string[];
-  collectionPathChanges?: CollectionPathChange[];
+  collectionPathChanges?: CollectionPathChange[] | undefined;
+  sourceDirectories?: Record<string, string>;
+  pathMappingVersion?: 1;
+  legacyPaths?: Record<string, string[]>;
+  workspaceJournal?: WorkspaceJournal | null;
+  pendingRemovals?: PendingCollectionRemoval[] | undefined;
   httpConfigIntent?: ProviderHttpConfigIntent;
   operationJournal?: ProviderOperationJournal | null;
   renameJournal?: ProviderRenameJournal | null;
@@ -119,7 +127,7 @@ export interface ProviderFileServiceOptions {
   dataDir: string;
   maxContentBytes: number;
   writeQueue?: WriteQueue;
-  store: Pick<ConfigStore, "list" | "read" | "saveFileUnqueued" | "restoreFileUnqueued">;
+  store: Pick<ConfigStore, "list" | "read" | "saveFileUnqueued" | "restoreFileUnqueued"> & Partial<Pick<ConfigStore, "resolveProviderPaths" | "mapProviderContent">>;
   subscriptions?: () => PublicSubscription[];
   clearSubscriptionProviderUnqueued?: (identity: SubscriptionProviderIdentity) => Promise<void>;
   readRuntimeDependencies?: () => Promise<ProviderRuntimeDependencies>;
@@ -151,9 +159,29 @@ export class ProviderFileService {
   private readonly writeQueue: WriteQueue;
   private state: ProviderFileState = { version: 1, manual: [], filters: {}, local: [], templates: DEFAULT_PROVIDER_TEMPLATES, manualHttp: [] };
   private initialized = false;
+  private cleanupRuntime: ProviderRuntimeDependencies | undefined;
 
   constructor(readonly options: ProviderFileServiceOptions) {
     this.writeQueue = options.writeQueue ?? new WriteQueue();
+    options.store.resolveProviderPaths = (name, content) => this.resolvePaths(name, content);
+  }
+
+  private async resolvePaths(name: string, content: string) {
+    const paths = await resolveCollectionPaths(this.options, name, content, this.state.sourceDirectories?.[name] ?? collectionScope(name),
+      this.state.pathMappingVersion ? new Set(this.state.legacyPaths?.[name] ?? []) : undefined, Object.hasOwn(this.state.legacyPaths ?? {}, name));
+    for (const item of paths) {
+      const originalKey = this.collectionFileName(item.sourcePath, item.category);
+      if (!originalKey || item.status === "outside_scope" || item.status === "unreadable") continue;
+      const originalPath = this.pathForName(originalKey, item.category);
+      const maintained = (this.state.httpCachePaths ?? []).includes(originalPath) || (item.category === "proxy" &&
+        (subscriptionReservations(this.options.subscriptions?.() ?? [], originalKey).length || localReservations(this.state.local, originalKey).length));
+      if (!maintained) continue;
+      item.fileName = originalKey;
+      item.referencePath = `./${relative(this.options.dataDir, originalPath).split(sep).join("/")}`;
+      item.status = await controlledPathStatus(this.directoryFor(item.category), originalPath);
+      item.writable = false;
+    }
+    return paths;
   }
 
   async init() {
@@ -165,7 +193,7 @@ export class ProviderFileService {
       const manual = value.manual.filter((entry): entry is { fileName: string; category: ProviderCategory } =>
         Boolean(entry) && typeof entry.fileName === "string" &&
         (entry.category === "proxy" || entry.category === "rule") &&
-        FILE_NAME_PATTERN.test(entry.fileName));
+        validProviderKey(entry.fileName));
       const filters: Record<string, ProviderFilterSettings> = {};
       for (const [key, raw] of Object.entries(value.filters ?? {})) {
         const setting = recordValue(raw);
@@ -212,12 +240,17 @@ export class ProviderFileService {
       if (preferences && (!Number.isSafeInteger(preferences.version) || preferences.version < 0 ||
         !Array.isArray(preferences.readOnly) || preferences.readOnly.some((key) => typeof key !== "string"))) throw new Error();
       this.state = { version: 1, manual, filters, local, templates, manualHttp, httpConfigIntent, operationJournal,
+        sourceDirectories: Object.fromEntries(Object.entries(value.sourceDirectories ?? {}).filter(([, scope]) => typeof scope === "string" && COLLECTION_SCOPE.test(scope))),
+        ...(value.pathMappingVersion === 1 ? { pathMappingVersion: 1 as const } : {}),
+        legacyPaths: Object.fromEntries(Object.entries(value.legacyPaths ?? {}).filter(([, paths]) => Array.isArray(paths) && paths.every((path) => typeof path === "string"))),
+        workspaceJournal: parseWorkspaceJournal(value.workspaceJournal),
+        pendingRemovals: Array.isArray(value.pendingRemovals) ? value.pendingRemovals : [],
         collectionPreferences: preferences ?? { version: 0, readOnly: [] },
         httpCachePaths: Array.isArray(value.httpCachePaths) ? value.httpCachePaths.filter((path) => typeof path === "string") : [],
         collectionPathChanges: Array.isArray(value.collectionPathChanges) ? value.collectionPathChanges.filter((entry) =>
           entry && typeof entry.configName === "string" && typeof entry.name === "string" &&
           (entry.category === "proxy" || entry.category === "rule") &&
-          this.collectionFileName(entry.fromPath, entry.category) && this.collectionFileName(entry.toPath, entry.category) &&
+          typeof entry.fromPath === "string" && typeof entry.toPath === "string" &&
           [entry.beforeConfigSha256, entry.configSha256, entry.fileSha256].every((sha) => typeof sha === "string" && /^[a-f0-9]{64}$/.test(sha)) &&
           typeof entry.device === "string" && /^\d+$/.test(entry.device) && typeof entry.inode === "string" && /^[1-9]\d*$/.test(entry.inode)) : [],
       };
@@ -228,6 +261,26 @@ export class ProviderFileService {
     }
     await recoverHttpConfigIntent(this.httpContext());
     await this.recoverProviderOperationSafely();
+    await recoverWorkspace(this.workspaceContext());
+    if (!this.state.pathMappingVersion) {
+      const legacyPaths: Record<string, string[]> = {};
+      for (const config of await this.options.store.list()) {
+        legacyPaths[config.name] = [];
+        const source = await this.options.store.read(config.name);
+        const document = parseDocument(source.content);
+        if (document.errors.length) continue;
+        let root; try { root = recordValue(document.toJS()); } catch { continue; }
+        for (const category of ["proxy", "rule"] as const) for (const value of Object.values(recordValue(root?.[`${category}-providers`]) ?? {})) {
+          const declaration = recordValue(value);
+          const key = declaration?.type === "file" ? this.collectionFileName(declaration.path, category) : null;
+          if (!key) continue;
+          const path = this.pathForName(key, category);
+          if (!await controlledPathStatus(this.directoryFor(category), path)) (legacyPaths[source.name] ??= []).push(path);
+        }
+      }
+      const next = { ...this.state, pathMappingVersion: 1 as const, legacyPaths };
+      await this.writeState(next, false); this.state = next;
+    }
     this.initialized = true;
   }
 
@@ -253,11 +306,9 @@ export class ProviderFileService {
     const references = await rememberHttpCachePaths(this.httpContext());
     const records: ProviderFileRecord[] = [];
     for (const category of ["proxy", "rule"] as const) {
-      const entries = await readdir(this.directoryFor(category), { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile() || !FILE_NAME_PATTERN.test(entry.name)) continue;
+      for (const fileName of await providerFileKeys(this.directoryFor(category))) {
         try {
-          records.push(await this.record(entry.name, category, references));
+          records.push(await this.record(fileName, category, references));
         } catch (error) {
           if (!(error instanceof ProviderFileNotFoundError)) throw error;
         }
@@ -269,6 +320,7 @@ export class ProviderFileService {
   async ensureProviderOperationRecovered() {
     if (!this.initialized) throw new ProviderFileRecoveryError("provider operation recovery is incomplete");
     await ensureProviderDirectoryControlled(this.options.dataDir, this.options.providerDir, this.options.ruleProviderDir);
+    if (this.state.workspaceJournal) await recoverWorkspace(this.workspaceContext());
     if (this.state.httpConfigIntent) await recoverHttpConfigIntent(this.httpContext());
     if (!this.state.operationJournal) return;
     await this.recoverProviderOperationSafely();
@@ -504,7 +556,7 @@ export class ProviderFileService {
       const declaration = recordValue(recordValue(config?.[`${input.category}-providers`])?.[input.name]);
       if (!declaration) throw new ProviderFileNotFoundError("collection not found");
       if (declaration.type !== "inline") {
-        const fileName = this.collectionFileName(declaration.path, input.category);
+        const fileName = await this.mappedFileName(input.configName, input.category, declaration.path);
         if (declaration.type !== "file" || !fileName) throw new ProviderFileReadOnlyError("collection body is read-only");
         await this.assertWritable(input.category, fileName);
       }
@@ -519,14 +571,19 @@ export class ProviderFileService {
   }
 
   private collectionFileName(path: unknown, category: ProviderCategory) {
-    if (typeof path !== "string" || isAbsolute(path) || path.split(/[\\/]/).includes("..")) return null;
-    const fileName = basename(path);
-    if (!FILE_NAME_PATTERN.test(fileName)) return null;
-    return resolve(this.options.dataDir, path) === this.pathForName(fileName, category) ? fileName : null;
+    if (typeof path !== "string" || path.split(/[\\/]/).includes("..")) return null;
+    const fileName = relative(this.directoryFor(category), resolve(this.options.dataDir, path)).split(sep).join("/");
+    return validProviderKey(fileName) ? fileName : null;
+  }
+
+  private async mappedFileName(configName: string, category: ProviderCategory, path: unknown) {
+    const paths = await this.resolvePaths(configName, stringify({ [`${category}-providers`]: { target: { type: "file", path } } }));
+    const target = paths[0];
+    return target && (!target.status || target.status === "missing") ? target.fileName : null;
   }
 
   private async verifyPathChangeFile(change: CollectionPathChange) {
-    const fileName = this.collectionFileName(change.fromPath, change.category);
+    const fileName = await this.mappedFileName(change.configName, change.category, change.fromPath);
     if (!fileName) throw new ProviderFileNameError("provider path is outside its controlled directory");
     const references = await rememberHttpCachePaths(this.httpContext());
     const path = this.pathForName(fileName, change.category);
@@ -546,7 +603,7 @@ export class ProviderFileService {
     for (const change of this.state.collectionPathChanges ?? []) {
       if (!pathChangeMatches(change, snapshot)) continue;
       try {
-        const target = this.collectionFileName(change.toPath, change.category);
+        const target = await this.mappedFileName(change.configName, change.category, change.toPath);
         if (!target || await readControlledFile(this.pathForName(target, change.category), this.options.maxContentBytes)) continue;
         await this.verifyPathChangeFile(change);
         const { category, name, fromPath, toPath, fileSha256 } = change;
@@ -567,6 +624,158 @@ export class ProviderFileService {
     return this.writeQueue.enqueue(() => this.saveConfigUnqueued(name, content, expectedSha256));
   }
 
+  private workspaceContext(): WorkspaceOperationContext {
+    const service = this;
+    return {
+      store: this.options.store, maxContentBytes: this.options.maxContentBytes, directory: (category) => this.directoryFor(category),
+      get journal() { return service.state.workspaceJournal ?? null; }, beforePublish: this.options.beforeFileRename,
+      writeJournal: async (workspaceJournal) => {
+        const next = { ...this.state, workspaceJournal }; await this.writeState(next, false); this.state = next;
+      },
+      commit: async (workspaceJournal) => {
+        const manual = [...this.state.manual];
+        for (const file of workspaceJournal.files) {
+          if (!file.before && !manual.some((entry) => entry.category === file.category && entry.fileName === file.fileName)) manual.push({ category: file.category, fileName: file.fileName });
+        }
+        const pendingRemovals = [...this.state.pendingRemovals ?? []];
+        for (const removal of workspaceJournal.removals) {
+          if (!pendingRemovals.some((entry) => entry.configName === workspaceJournal.configName && entry.category === removal.category && entry.fileName === removal.fileName)) pendingRemovals.push({ ...removal, configName: workspaceJournal.configName });
+        }
+        const next = { ...this.state, manual, pendingRemovals, workspaceJournal, ...(workspaceJournal.httpProviders ? {
+          manualHttp: [...(this.state.manualHttp ?? []).filter((owner) => owner.configName !== workspaceJournal.configName), ...workspaceJournal.httpProviders],
+        } : {}) };
+        await this.writeState(next); this.state = next;
+      },
+    };
+  }
+
+  saveCollectionWorkspace(input: { configName: string; content: string; expectedSha256: string; bodies: CollectionBodyDraft[]; removals: Array<{ category: ProviderCategory; name: string }>; httpProviders?: Array<{ category: ProviderCategory; name: string }> | undefined }) {
+    return this.writeQueue.enqueue(async () => {
+      await this.ensureProviderOperationRecovered();
+      const previous = await this.options.store.read(input.configName);
+      if (previous.sha256 !== input.expectedSha256) throw new ConfigConflictError("configuration changed");
+      const after = collectionDeclarations(input.content);
+      const contentForPaths = after ? input.content : previous.content;
+      const references = await rememberHttpCachePaths(this.httpContext());
+      const paths = await this.resolvePaths(previous.name, contentForPaths);
+      const bodies: Array<CollectionBodyDraft & { fileName: string }> = [];
+      const seen = new Set<string>();
+      for (const body of input.bodies) {
+        const path = paths.find((entry) => entry.category === body.category && entry.name === body.name);
+        if (!path?.fileName || (path.status && path.status !== "missing")) throw new ConfigProviderFilesError([{ category: body.category, name: body.name, status: path?.status ?? "outside_scope" }]);
+        const key = `${body.category}:${providerFileNameKey(path.fileName)}`;
+        if (seen.has(key)) throw new ConfigProviderFilesError([{ category: body.category, name: body.name, status: "conflict" }]);
+        seen.add(key);
+        if (Buffer.byteLength(body.content, "utf8") > this.options.maxContentBytes) throw new ProviderFileValidationError("provider content exceeds the size limit");
+        const target = this.pathForName(path.fileName, body.category);
+        if (this.collectionPreferences().readOnly.includes(collectionPreferenceKey(previous.name, body.category, body.name)) ||
+          (this.state.httpCachePaths ?? []).includes(target) || references.get(target) === null ||
+          (body.category === "proxy" && (subscriptionReservations(this.options.subscriptions?.() ?? [], path.fileName).length || localReservations(this.state.local, path.fileName).length))) throw new ProviderFileReadOnlyError("provider body is read-only");
+        const existing = await readControlledFile(target, this.options.maxContentBytes);
+        if ((existing?.sha256 ?? null) !== body.expectedSha256) throw new ProviderFileConflictError("provider file changed");
+        if (existing) await this.assertWritable(body.category, path.fileName);
+        await ensureProviderParent(this.directoryFor(body.category), path.fileName);
+        bodies.push({ ...body, fileName: path.fileName });
+      }
+      const removals: CollectionRemoval[] = [];
+      const previousPaths = await this.resolvePaths(previous.name, previous.content);
+      if (input.removals.length && !after) throw new ProviderFileValidationError("collection removal requires readable declarations");
+      const requestedRemovals = [...input.removals.map((entry) => ({ ...entry, explicit: true })),
+        ...input.bodies.map((entry) => ({ category: entry.category, name: entry.name, explicit: false }))];
+      for (const removal of requestedRemovals) {
+        if (removal.explicit && recordValue(after?.[`${removal.category}-providers`])?.[removal.name]) throw new ProviderFileConflictError("collection declaration remains");
+        const path = previousPaths.find((entry) => entry.category === removal.category && entry.name === removal.name);
+        if (!path?.fileName || path.status) continue;
+        if (paths.some((entry) => entry.referencePath === path.referencePath)) continue;
+        const file = await readControlledFile(this.pathForName(path.fileName, removal.category), this.options.maxContentBytes);
+        if (file && !removals.some((entry) => entry.category === removal.category && entry.fileName === path.fileName)) removals.push({ category: removal.category, name: removal.name, fileName: path.fileName, sha256: file.sha256, identity: `${file.device}:${file.inode}` });
+      }
+      const httpProviders = after && input.httpProviders ? input.httpProviders.map((owner) => {
+        const declaration = recordValue(recordValue(after?.[`${owner.category}-providers`])?.[owner.name]) ??
+          this.state.manualHttp?.find((entry) => entry.configName === previous.name && entry.category === owner.category && entry.name === owner.name)?.declaration;
+        if (!declaration || declaration.type !== "http") throw new ProviderFileValidationError("HTTP collection declaration is unavailable");
+        return { ...owner, configName: previous.name, declaration };
+      }) : undefined;
+      if (!bodies.length && !removals.length && !httpProviders) return this.saveConfigUnqueued(previous.name, input.content, previous.sha256);
+      return saveWorkspace(this.workspaceContext(), previous, input.content, bodies, removals, httpProviders);
+    });
+  }
+
+  renameConfigSource(oldName: string, newName: string, renameSource: () => Promise<ConfigSnapshot>) {
+    return this.writeQueue.enqueue(() => this.renameConfigSourceUnqueued(oldName, newName, renameSource));
+  }
+
+  validateCollectionWorkspace(configName: string, content: string, bodies: CollectionBodyDraft[]) {
+    return this.writeQueue.enqueue(async () => {
+      await this.options.store.read(configName);
+      const diagnostics = [];
+      const syntaxValid = (text: string) => { try { parse(text); return true; } catch { return false; } };
+      if (!syntaxValid(content)) diagnostics.push({ code: "yaml_syntax", message: "源配置 YAML 格式错误。" });
+      for (const body of bodies) if (!syntaxValid(body.content)) diagnostics.push({
+        code: "collection_yaml", message: "集合正文 YAML 格式错误。", path: [`${body.category}-providers`, body.name],
+      });
+      if (diagnostics.length) throw new ConfigValidationError("collection YAML is invalid", diagnostics);
+      const conflicts = (await this.resolvePaths(configName, content)).filter((entry) => entry.status === "conflict");
+      if (conflicts.length) throw new ConfigProviderFilesError(conflicts.map(({ category, name }) => ({ category, name, status: "conflict" })));
+      return { valid: true as const };
+    });
+  }
+
+  async renameConfigSourceUnqueued(oldName: string, newName: string, renameSource: () => Promise<ConfigSnapshot>) {
+    await this.ensureProviderOperationRecovered();
+    const before = this.state;
+    if (oldName === newName) return renameSource();
+    const sourceDirectories = { ...before.sourceDirectories, [newName]: before.sourceDirectories?.[oldName] ?? collectionScope(oldName),
+      [oldName]: collectionScope(randomBytes(16).toString("hex")) };
+    const legacyPaths = { ...before.legacyPaths };
+    if (Object.hasOwn(legacyPaths, oldName)) legacyPaths[newName] = legacyPaths[oldName]!;
+    delete legacyPaths[oldName];
+    const next = { ...before, sourceDirectories, legacyPaths,
+      manualHttp: (before.manualHttp ?? []).map((entry) => entry.configName === oldName ? { ...entry, configName: newName } : entry),
+      local: before.local.map((entry) => entry.configName === oldName ? { ...entry, configName: newName } : entry),
+      pendingRemovals: before.pendingRemovals?.map((entry) => entry.configName === oldName ? { ...entry, configName: newName } : entry),
+      collectionPathChanges: before.collectionPathChanges?.map((entry) => entry.configName === oldName ? { ...entry, configName: newName } : entry),
+      collectionPreferences: before.collectionPreferences ? { ...before.collectionPreferences, readOnly: before.collectionPreferences.readOnly.map((key) => {
+        try { const parts = JSON.parse(key); if (parts[0] === oldName) { parts[0] = newName; return JSON.stringify(parts); } } catch { /* Preserve unrelated preference keys. */ }
+        return key;
+      }) } : undefined,
+    };
+    await this.writeState(next); this.state = next;
+    try { return await renameSource(); }
+    catch (error) { await this.writeState(before); this.state = before; throw error; }
+  }
+
+  cleanupAppliedCollections(configName: string, expectedSha256: string, readConfirmedRuntime: () => Promise<ProviderRuntimeDependencies>) {
+    return this.writeQueue.enqueue(async () => {
+      await this.ensureProviderOperationRecovered();
+      const pending = (this.state.pendingRemovals ?? []).filter((entry) => entry.configName === configName);
+      if (!pending.length) return [];
+      const results: ProviderCleanupItem[] = [];
+      try {
+        this.cleanupRuntime = await readConfirmedRuntime();
+        if ((await this.options.store.read(configName)).sha256 !== expectedSha256) this.cleanupRuntime = { ...this.cleanupRuntime, uncertain: true };
+        const references = await rememberHttpCachePaths(this.httpContext());
+        for (const expected of pending) {
+          const item = await this.cleanupItem(expected.category, expected.fileName, undefined, references);
+          const proof = await readControlledFile(this.pathForName(expected.fileName, expected.category), this.options.maxContentBytes);
+          if (!proof) { item.action = "deleted"; item.reason = "deleted"; }
+          else if (proof.sha256 !== expected.sha256 || `${proof.device}:${proof.inode}` !== expected.identity) { item.action = "keep"; item.reason = "changed"; }
+          else if (item.action === "delete") {
+            try {
+              await this.deleteUnqueued(item.category, item.fileName, item.sha256, undefined, undefined, undefined, item.identity, false, references);
+              item.action = "deleted"; item.reason = "deleted";
+            } catch { item.action = "keep"; item.reason = "delete_failed"; }
+          }
+          results.push(item);
+        }
+        const pendingRemovals = (this.state.pendingRemovals ?? []).filter((entry) => entry.configName !== configName ||
+          !results.some((item) => item.category === entry.category && item.fileName === entry.fileName && item.action === "deleted"));
+        const next = { ...this.state, pendingRemovals }; await this.writeState(next); this.state = next;
+        return results;
+      } finally { this.cleanupRuntime = undefined; }
+    });
+  }
+
   private async saveConfigUnqueued(name: string, content: string, expectedSha256: string) {
     await this.ensureProviderOperationRecovered();
     const previous = await this.options.store.read(name);
@@ -580,12 +789,12 @@ export class ProviderFileService {
       for (const [collectionName, value] of Object.entries(recordValue(after?.[category + "-providers"]) ?? {})) {
         const declaration = recordValue(value);
         const old = recordValue(recordValue(before?.[category + "-providers"])?.[collectionName]);
-        const target = this.collectionFileName(declaration?.path, category);
+        const target = await this.mappedFileName(name, category, declaration?.path);
         if (declaration?.type !== "file" || old?.type !== "file" || !target) continue;
         try {
           if (await readControlledFile(this.pathForName(target, category), this.options.maxContentBytes)) continue;
           const carried = previousChanges.find((entry) => entry.category === category && entry.name === collectionName && pathChangeMatches(entry, previous));
-          const oldFile = this.collectionFileName(old.path, category);
+          const oldFile = await this.mappedFileName(name, category, old.path);
           const original = oldFile ? await readControlledFile(this.pathForName(oldFile, category), this.options.maxContentBytes) : null;
           if (!original && carried && declaration.path !== carried.fromPath) {
             await this.verifyPathChangeFile(carried);
@@ -634,8 +843,8 @@ export class ProviderFileService {
         throw new ProviderFileConflictError("collection path changed");
       }
       const original = await this.verifyPathChangeFile(change);
-      const fileName = this.collectionFileName(change.fromPath, change.category)!;
-      const target = this.collectionFileName(change.toPath, change.category)!;
+      const fileName = (await this.mappedFileName(change.configName, change.category, change.fromPath))!;
+      const target = (await this.mappedFileName(change.configName, change.category, change.toPath))!;
       if (await readControlledFile(this.pathForName(target, change.category), this.options.maxContentBytes)) throw new ProviderFileExistsError("provider file already exists");
       if (input.action === "restore") return { fromPath: change.fromPath, content: original.content.toString("utf8") };
       const result = await this.renameCollectionFileUnqueued({ category: change.category, fileName, nextFileName: target,
@@ -689,8 +898,8 @@ export class ProviderFileService {
       }
       // Source type is fixed here: changing type must never turn a download or extraction into an editable body.
       if (declaration.type !== original.type) throw new ProviderFileReadOnlyError("collection source type cannot be changed");
-      const oldFileName = this.collectionFileName(original.path, input.category);
-      const nextFileName = this.collectionFileName(declaration.path, input.category);
+      const oldFileName = original.type === "file" ? await this.mappedFileName(input.configName, input.category, original.path) : this.collectionFileName(original.path, input.category);
+      const nextFileName = original.type === "file" ? await this.mappedFileName(input.configName, input.category, declaration.path) : this.collectionFileName(declaration.path, input.category);
       const pathChanged = declaration.path !== original.path;
       if (pathChanged && !nextFileName) throw new ProviderFileNameError("provider path is outside its controlled directory");
       const owned = oldFileName && input.category === "proxy" &&
@@ -748,7 +957,10 @@ export class ProviderFileService {
   async validateSourceCollectionsUnqueued(configName: string, expectedSha256: string) {
     const source = await this.options.store.read(configName);
     if (source.sha256 !== expectedSha256) throw new ConfigConflictError("configuration changed");
-    const document = parseDocument(source.content);
+    const paths = await this.resolvePaths(source.name, source.content);
+    const issues = paths.flatMap(({ category, name, status }) => status ? [{ category, name, status }] : []);
+    if (issues.length) throw new ConfigProviderFilesError(issues);
+    const document = parseDocument(mappedCollectionContent(source.content, paths));
     if (document.errors.length) throw new ProviderFileValidationError("configuration YAML is invalid");
     const root = recordValue(document.toJS());
     const configSources = new Map([[configName, { config: root, unreadable: !root && Boolean(source.content.trim()) }]]);
@@ -1141,7 +1353,7 @@ export class ProviderFileService {
   }
 
   private async renameRetention(fileName: string, configName: string, content: string, category: ProviderCategory): Promise<RetainedProviderFile | undefined> {
-    const candidate = recordValue(parse(content));
+    const candidate = recordValue(parse(mappedCollectionContent(content, await this.resolvePaths(configName, content))));
     const target = this.pathForName(fileName, category);
     const identity = await readControlledFile(target, this.options.maxContentBytes);
     const evidence = await this.inspectFileReferences(fileName, configName, category);
@@ -1167,6 +1379,7 @@ export class ProviderFileService {
     configName: string; configContent: string; expectedConfigSha256: string;
     pathChange?: CollectionPathChange;
   }) {
+    await ensureProviderParent(this.directoryFor(input.category), input.nextFileName);
     const file = input.pathChange
       ? await this.verifyPathChangeFile(input.pathChange)
       : await this.assertWritable(input.category, input.fileName);
@@ -1216,7 +1429,7 @@ export class ProviderFileService {
       if (input.configName) {
         const snapshot = await this.options.store.read(input.configName);
         if (snapshot.sha256 !== input.expectedConfigSha256) throw new ProviderFileConflictError("configuration changed");
-        source = recordValue(parse(snapshot.content));
+        source = recordValue(parse(mappedCollectionContent(snapshot.content, snapshot.collectionPaths ?? [])));
         if (!source && snapshot.content.trim()) throw new ProviderFileValidationError("configuration cannot be inspected");
         configSources.set(snapshot.name, { config: source, unreadable: false });
       }
@@ -1232,18 +1445,17 @@ export class ProviderFileService {
             const key = `${category}:${providerFileNameKey(target)}`;
             if (seen.has(key)) continue;
             seen.add(key);
-            const fileName = basename(target);
-            if (!FILE_NAME_PATTERN.test(fileName) || providerFileNameKey(target) !== providerFileNameKey(this.pathForName(fileName, category))) {
-              files.push({ category, fileName: FILE_NAME_PATTERN.test(fileName) ? fileName : "不支持清理的集合文件", sha256: "", identity: "", action: "keep", reason: "ownership_unknown" });
+            const fileName = relative(this.directoryFor(category), target).split(sep).join("/");
+            if (!validProviderKey(fileName) || providerFileNameKey(target) !== providerFileNameKey(this.pathForName(fileName, category))) {
+              files.push({ category, fileName: FILE_NAME_PATTERN.test(basename(target)) ? basename(target) : "不支持清理的集合文件", sha256: "", identity: "", action: "keep", reason: "ownership_unknown" });
             } else files.push(await this.cleanupItem(category, fileName, input.configName, references, false, configSources));
           }
         }
         return { files };
       }
       for (const category of input.category ? [input.category] : ["proxy", "rule"] as const) {
-        for (const entry of await readdir(this.directoryFor(category), { withFileTypes: true })) {
-          if (!FILE_NAME_PATTERN.test(entry.name)) continue;
-          files.push(await this.cleanupItem(category, entry.name, undefined, references, false, configSources));
+        for (const fileName of await providerFileKeys(this.directoryFor(category))) {
+          files.push(await this.cleanupItem(category, fileName, undefined, references, false, configSources));
         }
       }
       return { files };
@@ -1612,7 +1824,7 @@ export class ProviderFileService {
   }
 
   private temporaryPath(fileName: string, operation: string, category: ProviderCategory = "proxy") {
-    return resolve(this.directoryFor(category), `.${fileName}.${operation}-${randomBytes(8).toString("hex")}`);
+    return resolve(this.directoryFor(category), `.${basename(fileName)}.${operation}-${randomBytes(8).toString("hex")}`);
   }
 
   private hiddenPath(fileName: string, category: ProviderCategory = "proxy") {
@@ -2021,7 +2233,7 @@ export class ProviderFileService {
     // does not continuously prove which files Core currently uses.
     let runtime: ProviderRuntimeReferences;
     try {
-      runtime = await runtimeReferences(await this.options.readRuntimeDependencies?.(), target, targetIdentity, this.options.dataDir, this.options.maxContentBytes);
+      runtime = await runtimeReferences(this.cleanupRuntime ?? await this.options.readRuntimeDependencies?.(), target, targetIdentity, this.options.dataDir, this.options.maxContentBytes);
     } catch {
       runtime = { references: [], uncertain: true, scanComplete: false, unknownReason: "record_unreadable" };
     }

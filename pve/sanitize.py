@@ -9,7 +9,36 @@ import sys
 import tarfile
 
 
-def prepare(root, assets, runtime, expected):
+# MetaCubeX public release snapshot, published 2026-10-18. Stage these inputs
+# separately from the CT backup; installation consumes the bundled copies.
+PUBLIC_GEO = {
+    'geoip.metadb': {
+        'source': 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb',
+        'sha256': 'ec6701e428b7efe610fe40b187a69fb03324892a56792b033adc080d2b6c273e',
+        'bytes': 8423041,
+    },
+    'GeoSite.dat': {
+        'source': 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+        'sha256': '9cdf0d2f5cfab1f8a08c79503c92b1d712d1b6bb78c8567b55a0847f5a513cb7',
+        'bytes': 4272747,
+    },
+}
+
+
+def read_public_geo(folder):
+    files = {}
+    for name, record in PUBLIC_GEO.items():
+        path = Path(folder) / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != record['bytes']:
+            raise ValueError('Missing or invalid public GEO input: ' + name)
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != record['sha256']:
+            raise ValueError('Public GEO checksum mismatch: ' + name)
+        files[name] = data
+    return files
+
+
+def prepare(root, assets, runtime, expected, geo):
     root, assets, runtime = Path(root), Path(assets), Path(runtime)
     if os.geteuid() != 0 or root.resolve() != root or root.parts[:4] != ('/', 'var', 'lib', 'lxc') or root.name != 'rootfs':
         raise ValueError('Expected an explicit mounted build container')
@@ -25,6 +54,9 @@ def prepare(root, assets, runtime, expected):
         raise ValueError('Review additional user accounts before building')
     if hashlib.sha256(runtime.read_bytes()).hexdigest() != expected:
         raise ValueError('Runtime package checksum mismatch')
+    if Path(geo).resolve().is_relative_to(root):
+        raise ValueError('Public GEO inputs must be staged outside the build container')
+    geo_files = read_public_geo(geo)
 
     def target(relative):
         value = root / relative
@@ -152,6 +184,8 @@ def prepare(root, assets, runtime, expected):
     bootstrap = (source / 'test/development.yaml').read_bytes()
     write('var/lib/mihomo-manager/bootstrap.yaml', bootstrap, 0o640, 0, gid)
     write('var/lib/mihomo-manager/configs/main.yaml', bootstrap, 0o600, uid, gid)
+    for name, data in geo_files.items():
+        write('var/lib/mihomo-manager/' + name, data, 0o600, uid, gid)
     directory('var/lib/mihomo-manager', 0o700, uid, gid)
     directory('var/lib/mihomo-manager/configs', 0o700, uid, gid)
     nginx = (app / 'deploy/debian/nginx.conf').read_text().replace('__SYSINFO_UPSTREAM__', '127.0.0.1:9083')
@@ -176,12 +210,14 @@ def prepare(root, assets, runtime, expected):
             os.chown(path, offset + uid, offset + gid)
     report = {'schemaVersion': 1, 'product': 'mihomo-manager', 'managerVersion': json.loads((app / 'frontend/package.json').read_text())['version'],
               'runtimeSha256': expected, 'source': build['source'], 'node': build['node'], 'architecture': 'amd64',
-              'serviceUid': uid, 'serviceGid': gid, 'coreSha256': hashlib.sha256((root / 'opt/mihomo-manager/bin/mihomo').read_bytes()).hexdigest()}
+              'serviceUid': uid, 'serviceGid': gid, 'coreSha256': hashlib.sha256((root / 'opt/mihomo-manager/bin/mihomo').read_bytes()).hexdigest(),
+              'publicGeo': {name: {**record, 'path': '/var/lib/mihomo-manager/' + name, 'uid': uid, 'gid': gid, 'mode': '0600'}
+                            for name, record in PUBLIC_GEO.items()}}
     write('etc/mihomo-manager/pve-template.json', json.dumps(report, indent=2) + '\n')
     return report
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 5:
-        sys.exit('Usage: sanitize.py ROOT ASSETS RUNTIME SHA256')
+    if len(sys.argv) != 6:
+        sys.exit('Usage: sanitize.py ROOT ASSETS RUNTIME SHA256 GEO_DIR')
     print(json.dumps(prepare(*sys.argv[1:]), ensure_ascii=False))

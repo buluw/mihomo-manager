@@ -15,6 +15,7 @@ import {
   visibleConnectionColumns,
 } from "../src/features/connections/connectionLogic.ts";
 import { LatestRequestController } from "../src/shared/requestLifecycle.ts";
+import { ProxyDelayScheduler } from "../src/features/proxies/proxyDelayScheduler.ts";
 
 test("direct delay presets and custom HTTP URLs affect only DIRECT request targets", () => {
   assert.equal(defaultDirectDelayTest.preset, "xiaomi");
@@ -70,9 +71,13 @@ import {
   DIRECT_DELAY_TEST_URL,
   directProxyNames,
   displayedProxyDelay,
+  displayedProxyDelaySample,
   listProxyGroups,
   mergeProxyProviderNodes,
   proxyProtocolOptionColumns,
+  proxyDelayFailureLabel,
+  proxyProtocolDisplayName,
+  isCurrentProxyCard,
   measurableProxyCardMembers,
   runProxyCardDelayTests,
   PROXY_DELAY_TEST_URL,
@@ -83,7 +88,6 @@ import {
   proxyCountryLabel,
   formatProxyCountry,
   proxyDelayTarget,
-  requestProxyDelay,
   proxyRegionDisplayLabel,
   proxyDirectDelayRequest,
   proxyGroupDelayRequest,
@@ -802,7 +806,12 @@ test("merged protocol menu keeps original node name, protocol, and delay in stab
     name: "L1|fixture-region|fixture-line|2x", protocol: "VLESS", delayLabel: "42 ms",
   });
   assert.equal(proxyProtocolOptionColumns("untested", "Trojan", { delay: null, testedAt: 0 }).delayLabel, "---");
-  assert.equal(proxyProtocolOptionColumns("failed", "Trojan", { delay: null, testedAt: 1 }).delayLabel, "失败");
+  assert.equal(proxyProtocolOptionColumns("failed", "Trojan", { delay: null, testedAt: 1 }).delayLabel, "嘎了");
+  for (const failure of ["timeout", "unreachable", "api"] as const) {
+    const expected = failure === "api" ? "接口错误" : "嘎了";
+    assert.equal(proxyDelayFailureLabel({ delay: null, testedAt: 1, failure }), expected);
+    assert.equal(proxyProtocolOptionColumns("classified", "Trojan", { delay: null, testedAt: 1, failure }).delayLabel, expected);
+  }
 });
 
 test("automatic region preview preserves saved manual values until save, and cancel discards it", () => {
@@ -848,23 +857,20 @@ test("merged card delay targets deduplicate stable real members and exclude grou
   ]);
 });
 
-test("merged card delay tests publish each member as it settles and isolate failures", async () => {
+test("merged card delay batches wait for every member and aggregate actual outcomes", async () => {
   let resolveAlpha!: (delay: number) => void;
   const alpha = new Promise<number>((resolve) => { resolveAlpha = resolve; });
-  const published: Array<[string, number | null]> = [];
+  let completed = false;
   const running = runProxyCardDelayTests(
     [{ name: "alpha" }, { name: "beta" }, { name: "broken" }],
     ({ name }) => name === "alpha" ? alpha : name === "beta" ? Promise.resolve(35) : Promise.reject(new Error("fixture")),
-    (name, delay) => published.push([name, delay]),
-  );
+  ).then(result => { completed = true; return result; });
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal(published.some(([name, delay]) => name === "beta" && delay === 35), true);
-  assert.equal(published.some(([name, delay]) => name === "broken" && delay === null), true);
-  assert.equal(published.some(([name]) => name === "alpha"), false);
+  assert.equal(completed, false);
   resolveAlpha(68);
-  assert.deepEqual(await running, { succeeded: 2, failed: 1 });
-  assert.equal(published.some(([name, delay]) => name === "alpha" && delay === 68), true);
+  assert.deepEqual(await running, { succeeded: 2, failed: 1, failures: { timeout: 0, api: 1, unreachable: 0 }, cancelled: 0 });
+  assert.equal(completed, true);
 });
 
 test("provider direct nodes use their native healthcheck and configured direct URL", () => {
@@ -931,6 +937,38 @@ test("proxy delay display keeps the newest manual or runtime sample", () => {
     displayedProxyDelay(node, { delay: 321, testedAt: Date.parse("2026-08-02T08:00:00.000Z") }),
     252,
   );
+});
+
+test("proxy failed display survives history rereads and reloads until a newer success", () => {
+  const time = Date.parse("2026-10-19T08:00:00.000Z");
+  const manual = { delay: null, testedAt: time, failure: "timeout" as const };
+  const history = (delay: number, testedAt: number) => ({ history: [{ delay, time: new Date(testedAt).toISOString() }] });
+  const older = history(42, time - 1);
+  assert.deepEqual(displayedProxyDelaySample(older, manual), manual);
+  assert.equal(proxyDelayFailureLabel(displayedProxyDelaySample(older, manual)), "嘎了");
+  for (const testedAt of [time, time + 1]) {
+    const reread = history(0, testedAt);
+    for (const local of [manual, undefined]) {
+      const sample = displayedProxyDelaySample(reread, local);
+      assert.deepEqual(sample, { delay: null, testedAt });
+      assert.equal(sample.failure, undefined);
+      assert.equal(proxyDelayFailureLabel(sample), "嘎了");
+      assert.equal(proxyProtocolOptionColumns("node", "VLESS", sample).delayLabel, "嘎了");
+    }
+  }
+  const untested = displayedProxyDelaySample({ history: [] });
+  assert.deepEqual(untested, { delay: null, testedAt: 0 });
+  assert.equal(proxyDelayFailureLabel(untested), null);
+  assert.equal(proxyProtocolOptionColumns("node", "VLESS", untested).delayLabel, "---");
+  const api = displayedProxyDelaySample(older, { ...manual, failure: "api" });
+  assert.equal(proxyDelayFailureLabel(api), "接口错误");
+  assert.equal(proxyProtocolOptionColumns("node", "VLESS", api).delayLabel, "接口错误");
+  for (const local of [manual, undefined]) {
+    const success = displayedProxyDelaySample(history(56, time + 2), local);
+    assert.deepEqual(success, { delay: 56, testedAt: time + 2 });
+    assert.equal(proxyDelayFailureLabel(success), null);
+    assert.equal(proxyProtocolOptionColumns("node", "VLESS", success).delayLabel, "56 ms");
+  }
 });
 
 test("proxy address uses provider identity and never needs a port", () => {
@@ -1081,6 +1119,28 @@ test("proxy cards merge only declared members inside the same provider", () => {
   );
   assert.equal(crossProvider.length, 2);
   assert.equal(crossProvider.some((card) => card.grouped), false);
+});
+
+test("protocol display uses one name without changing node identities", () => {
+  for (const value of ["vless", "Vless", "VLESS", " Vless "]) assert.equal(proxyProtocolDisplayName(value), "VLESS");
+  assert.equal(proxyProtocolDisplayName("socks5"), "SOCKS5");
+  assert.equal(proxyProtocolDisplayName(""), "未知");
+  assert.deepEqual(proxyProtocolOptionColumns("Original Vless Node", "Vless", { delay: 42, testedAt: 1 }), { name: "Original Vless Node", protocol: "VLESS", delayLabel: "42 ms" });
+});
+
+test("proxy rows follow chosen sort while current membership controls highlighting", () => {
+  const addresses = { inline: {}, providers: {}, groups: {}, countries: {} };
+  const settings = { schemaVersion: 1 as const, version: 0, regions: [] };
+  const cards = buildProxyCards(["A", "B", "C", "D"], {}, {}, addresses);
+  const grouped = { ...cards[1]!, key: "merged", grouped: true, members: [...cards[1]!.members, ...cards[2]!.members] };
+  const rows = [cards[0]!, grouped, cards[3]!];
+  const sorted = (current: string, direction: "asc" | "desc") => sortProxyCards(rows, "name", direction, card => selectedProxyCardNode(card, current, null), {}, {}, addresses, settings, {});
+  for (const current of ["C", "D", "unknown"]) {
+    assert.deepEqual(sorted(current, "asc").map(card => card.key), ["node:A", "merged", "node:D"]);
+    assert.deepEqual(sorted(current, "desc").map(card => card.key), ["node:D", "merged", "node:A"]);
+  }
+  assert.equal(isCurrentProxyCard(grouped, "C"), true);
+  assert.deepEqual(rows.map(card => card.key), ["node:A", "merged", "node:D"]);
 });
 
 test("proxy view ordering keeps GLOBAL last and applies the selected card protocol", () => {
@@ -1657,11 +1717,12 @@ test("pending proxy selections overlay runtime reads without mutating the snapsh
 });
 
 test("independent probes run concurrently while groups and cards reuse overlapping actual targets", async () => {
-  const pending = new Map<string, Promise<number>>();
+  let pending: Record<string, string> = {};
+  const scheduler = new ProxyDelayScheduler(states => { pending = states; });
   let finishA!: (value: number) => void;
   let failB!: (error: Error) => void;
   const calls: string[] = [];
-  const request = (name: string) => requestProxyDelay(pending, name, () => {
+  const request = (name: string) => scheduler.request(name, "manual", () => {
     calls.push(name);
     return new Promise<number>((resolve, reject) => { if (name === "A") finishA = resolve; else failB = reject; });
   });
@@ -1672,8 +1733,8 @@ test("independent probes run concurrently while groups and cards reuse overlappi
   assert.deepEqual(calls, ["A", "B"]);
   finishA(23); failB(new Error("failed"));
   assert.deepEqual((await results).map(result => result.status), ["fulfilled", "rejected"]);
-  assert.equal(pending.size, 0);
-  assert.equal(await requestProxyDelay(pending, "B", async () => 42), 42);
+  assert.equal(Object.keys(pending).length, 0);
+  assert.equal(await scheduler.request("B", "manual", async () => 42), 42);
   assert.equal(proxyDelayTarget("Group", { Group: { now: "Nested" }, Nested: { now: "A" }, A: { type: "Socks5" } }), "A");
 });
 

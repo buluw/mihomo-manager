@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { ArrowLeft, ChevronDown } from "lucide-react"
 
 import { MobileChoiceSheet } from "@/components/patterns/mobile-choice-sheet"
@@ -9,23 +10,27 @@ const categories = [
   { value: "rule", label: "规则集合" },
 ]
 
-export function CollectionCategoryPicker({ category, disabled, onChoose }: {
+export function CollectionCategoryPicker({ category, count, disabled, actions, onChoose }: {
   category: ProviderCategory
+  count: number
+  actions: ReactNode
   disabled: boolean
   onChoose: (category: ProviderCategory) => boolean
 }) {
-  return <div className="flex min-h-13 shrink-0 items-center px-4 py-1" data-slot="collection-category">
+  return <div className="flex min-h-17 shrink-0 items-center gap-2 px-4 py-3" data-slot="collection-category">
     <MobileChoiceSheet title="切换分类" value={category} options={categories}
       onChoose={value => onChoose(value as ProviderCategory)}
       trigger={<Button variant="ghost" size="sm" disabled={disabled} aria-label="切换分类" className="min-h-11 gap-1 px-0 max-md:text-base">
         {categories.find(item => item.value === category)?.label}<ChevronDown data-icon="inline-end" />
       </Button>} />
+    <span className="text-xs text-muted-foreground tabular-nums">{count}</span>
+    <div className="ml-auto">{actions}</div>
   </div>
 }
 
-export function CollectionDetailHeader({ title, onBack }: { title: string; onBack: () => void }) {
+export function CollectionDetailHeader({ title, onBack, disabled }: { title: string; onBack: () => void; disabled?: boolean }) {
   return <div className="flex min-h-13 shrink-0 items-center gap-2 px-4 py-1 md:hidden" data-slot="collection-title">
-    <Button variant="ghost" size="icon" className="size-11 shrink-0" onClick={onBack} aria-label="返回集合列表"><ArrowLeft /></Button>
+    <Button variant="ghost" size="icon" className="size-11 shrink-0" onClick={onBack} disabled={disabled} aria-label="返回集合列表"><ArrowLeft /></Button>
     <span className="min-w-0 text-sm font-medium wrap-anywhere">{title}</span>
   </div>
 }

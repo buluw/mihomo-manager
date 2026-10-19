@@ -1,8 +1,9 @@
+import { parseYamlDraft } from "@/shared/yamlDraft";
 import { type ConfigSnapshot, type ProviderFileIssue } from "@/api/configClient";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { RefreshCw, TriangleAlert } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
-import { providerFileIssueLabel } from "../../shared/configMessages.ts";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { CollectionIssuesNotice } from "@/components/patterns/collection-issues-notice";
 import { ConfigAddDialog, ConfigRenameDialog } from "./ConfigFileDialogs";
 import { ConfigResourceList } from "./ConfigResourceList";
 import { ConfigFileToolbar } from "./ConfigFileToolbar";
@@ -41,14 +42,17 @@ export function ConfigFileWorkspace({
   onOpenCollections,
   mobileListTitle,
   onOpenDetail,
+  onBack,
   children,
 }: {
   workspace: ConfigWorkspace
   onOpenCollections: (source?: ConfigSnapshot, item?: ProviderFileIssue) => Promise<void>
   mobileListTitle: ReactNode
   onOpenDetail: () => void
+  onBack: () => void
   children: (view: {
     resources: ReactNode
+    toolbar: ReactNode
     mobileResources: ReactNode
     editor: () => ReactNode
     status: ReactNode
@@ -140,7 +144,6 @@ export function ConfigFileWorkspace({
     if (!created) return
     setAddOpen(false)
     onOpenDetail()
-    if (created.providerIssues?.length) void onOpenCollections(created)
   }
 
   const openRenameDialog = (name: string) => {
@@ -176,6 +179,14 @@ export function ConfigFileWorkspace({
     />
   )
 
+  const { collectionPaths, hasYamlErrors } = useMemo(() => {
+    const document = parseYamlDraft(config.content)
+    return { hasYamlErrors: document.errors.length > 0, collectionPaths: Object.fromEntries(config.providerIssues.map(issue => {
+      const path = document.getIn([issue.category === "proxy" ? "proxy-providers" : "rule-providers", issue.name, "path"])
+      return [issue.category + ":" + issue.name, typeof path === "string" ? path : ""]
+    })) }
+  }, [config.content, config.providerIssues])
+
   const validationLabel =
     config.validation === "running"
       ? "正在校验"
@@ -187,10 +198,10 @@ export function ConfigFileWorkspace({
 
   return children({
     resources: resourceList(),
+    toolbar: <ConfigFileToolbar workspace={config} onBack={onBack} onAdd={openAddDialog} onRename={() => config.activeName && openRenameDialog(config.activeName)} />,
     mobileResources: resourceList(true),
     editor: () => (
-      <div className="@container/config-editor grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden">
-        <ConfigFileToolbar workspace={config} onAdd={openAddDialog} onRename={() => config.activeName && openRenameDialog(config.activeName)} />
+      <div className="@container/config-editor grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] gap-0 overflow-hidden">
         <div className="min-h-0 min-w-0 overflow-hidden">
           {config.unavailable ? (
             <div className="flex h-full items-center justify-center p-5">
@@ -236,12 +247,9 @@ export function ConfigFileWorkspace({
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无配置文件，请先添加配置</div>
           ) : (
             <div className="flex h-full min-h-0 flex-col">
-            {config.providerIssues.length > 0 && <Alert className="shrink-0 rounded-none border-x-0"><TriangleAlert /><AlertTitle>配套集合文件尚未就绪</AlertTitle><AlertDescription>
-              <span>{config.providerIssues.map((issue) => `${issue.name}：${providerFileIssueLabel(issue.status)}`).join("；")}。集合文件就绪后才能加载 Core。</span>
-              <div className="flex flex-wrap gap-2">{config.providerIssues.map((issue) => <Button key={`${issue.category}:${issue.name}`} variant="outline" size="sm"
-                disabled={config.busy !== null || config.mutation !== null} onClick={() => void onOpenCollections(undefined, issue)}>{issue.name}：编辑集合</Button>)}</div>
-            </AlertDescription></Alert>}
-            {config.validationError && <Alert variant="destructive" className="shrink-0 rounded-none border-x-0"><AlertDescription>{config.validationError}</AlertDescription></Alert>}
+            <CollectionIssuesNotice key={config.activeName} issues={config.providerIssues.map(issue => ({ ...issue, path: collectionPaths[issue.category + ":" + issue.name] }))}
+              disabled={config.busy !== null || config.mutation !== null} onRepair={issue => void onOpenCollections(undefined, issue)} />
+            {config.validationError && (!config.providerIssues.length || hasYamlErrors || config.validation === "failed") && <Alert variant="destructive" className="max-h-32 shrink-0 overflow-y-auto rounded-none border-x-0"><AlertDescription>{config.validationError}</AlertDescription></Alert>}
             <div className="min-h-0 flex-1"><MonacoWorkspace
               path={config.activeName ? `config://file/${encodeURIComponent(config.activeName)}` : undefined}
               value={config.content}

@@ -110,8 +110,8 @@ test("configuration apply control distinguishes switching, editing, reapplying a
     [null, true, "应用配置", "apply", "已应用配置"],
   ] as const) {
     const control = configApplyControl({ activeName: "source.yaml", loadedName, dirty });
-    assert.deepEqual({ label: control.label, icon: control.icon, completed: control.completed, disabled: control.disabled }, { label, icon, completed, disabled: dirty });
-    if (dirty) assert.equal(control.reason, "请先保存配置");
+    assert.deepEqual({ label: control.label, icon: control.icon, completed: control.completed, disabled: control.disabled }, { label, icon, completed, disabled: false });
+    if (dirty) assert.equal(control.reason, "保存当前草稿并应用整份配置");
     else if (loadedName) assert.equal(control.reason, null);
     else assert.match(control.reason!, /运行来源未知/);
   }

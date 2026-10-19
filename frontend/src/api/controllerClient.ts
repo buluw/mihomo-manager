@@ -7,6 +7,7 @@ import type { ControllerStreamCommand, ControllerStreamEvent, ControllerStreamPa
 const CONTROLLER_BASE = "/api/controller";
 const CONTROLLER_SECRET_KEY = "mihomo-controller-secret";
 const DEFAULT_TIMEOUT_MS = 6_000;
+export const PROXY_DELAY_TIMEOUT_MS = 10_000;
 const LONG_OPERATION_TIMEOUT_MS = 30_000;
 export const PROVIDER_OPERATION_TIMEOUT_MS = 120_000;
 let memorySecret = "";
@@ -52,11 +53,11 @@ function controllerSecret() {
   }
 }
 
-export async function controllerApi<T = Json>(
+async function controllerResponse(
   path: string,
   options: RequestInit = {},
   timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<T> {
+): Promise<Response> {
   // REST 请求按 Mihomo 原生约定使用 Bearer；错误消息不读取响应正文，避免回显敏感信息。
   const headers = new Headers(options.headers);
   if (options.body != null && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -73,6 +74,11 @@ export async function controllerApi<T = Json>(
     if (error instanceof Error && error.name === "AbortError") throw error;
     throw new Error("Controller 连接失败");
   }
+  return response;
+}
+
+export async function controllerApi<T = Json>(path: string, options: RequestInit = {}, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
+  const response = await controllerResponse(path, options, timeoutMs);
   if (!response.ok) {
     throw new ControllerError(`Controller 请求失败 (${response.status})`, response.status);
   }
@@ -80,6 +86,38 @@ export async function controllerApi<T = Json>(
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("application/json")) return response.json() as Promise<T>;
   return response.text() as Promise<T>;
+}
+
+export type ControllerDelayFailure = "timeout" | "api" | "unreachable";
+export class ControllerDelayError extends Error {
+  readonly kind: ControllerDelayFailure;
+  constructor(kind: ControllerDelayFailure) {
+    super(kind === "timeout" ? "请求超时" : kind === "api" ? "测速接口错误" : "节点未测通");
+    this.name = "ControllerDelayError";
+    this.kind = kind;
+  }
+}
+
+export async function readControllerProxyDelay(path: string, signal: AbortSignal): Promise<number> {
+  try {
+    const response = await controllerResponse(path, { signal }, PROXY_DELAY_TIMEOUT_MS);
+    if (!response.ok) {
+      // Recognize only fixed native delay responses; response details stay inside the client.
+      const body = response.status === 503 || response.status === 504 ? await response.json().catch(() => null) : null;
+      if (response.status === 503 && body?.message === "An error occurred in the delay test") throw new ControllerDelayError("unreachable");
+      if (response.status === 504 && body?.message === "Timeout"
+        && /^\/providers\/proxies\/[^/]+\/[^/]+\/healthcheck(?:\?|$)/.test(path)) throw new ControllerDelayError("timeout");
+      throw new ControllerDelayError("api");
+    }
+    const result = await response.json() as { delay?: unknown };
+    if (typeof result.delay !== "number" || !Number.isFinite(result.delay) || result.delay < 0) throw new ControllerDelayError("api");
+    if (result.delay === 0) throw new ControllerDelayError("unreachable");
+    return result.delay;
+  } catch (error) {
+    if (signal.aborted) throw signal.reason;
+    if (error instanceof ControllerDelayError) throw error;
+    throw new ControllerDelayError(error instanceof Error && error.name === "TimeoutError" ? "timeout" : "api");
+  }
 }
 
 export function loadControllerConfig(path?: string) {

@@ -34,7 +34,7 @@ export function ConfigResourceList({
         </span>
         <Button
           size="sm"
-          className="ml-auto h-9"
+          className="ml-auto h-10 min-w-24 max-md:min-h-10 max-md:min-w-24"
           disabled={workspace.unavailable || workspace.busy !== null || workspace.mutation !== null}
           onClick={onAdd}
         >
@@ -42,20 +42,20 @@ export function ConfigResourceList({
           新建
         </Button>
       </ResourceListHeader>}
-      <div className="flex min-h-0 flex-col overflow-y-auto px-4 pt-1 pb-5 md:px-3">
+      <div className="flex min-h-0 flex-col overflow-y-auto p-2">
         <ResourceListGroup>
         {orderedFiles.map((file) => {
           const active = file.name === workspace.activeName
           const loaded = file.name === workspace.loadedName
-          return <ResourceListRow key={file.name} name={file.name} selected={active} marked={loaded} mobileMarker
+          const missing = active ? workspace.providerIssues.filter(issue => issue.status === "missing").length : 0
+          return <ResourceListRow key={file.name} name={file.name} selected={active}
             description={loaded ? "最近成功加载记录对应来源" : undefined}
-            metadata={<><span>{file.subscriptionManaged ? "订阅管理" : "本地配置"}</span>
-              {active && workspace.dirty && <span className="text-status-warning">未保存</span>}
-              {active && workspace.contentState === "error" && <span className="text-destructive">读取失败</span>}
-              {active && workspace.validation === "failed" && <span className="text-destructive">校验失败</span>}
-              {active && workspace.unavailable && <span className="text-destructive">配置不可用</span>}
-              {active && workspace.runtime.error && <span className="text-status-warning">加载身份未知</span>}
-            </>}
+            metadata={file.subscriptionManaged ? "订阅管理" : "本地配置"}
+            status={active && workspace.unavailable ? "配置不可用" : active && workspace.contentState === "error" ? "读取失败"
+              : missing ? <span className="text-status-warning">缺少 {missing} 项</span>
+              : active && workspace.dirty ? <span className="text-status-info">未保存</span>
+              : active && workspace.validation === "failed" ? "校验失败" : active && workspace.runtime.error ? "身份未知"
+              : active && workspace.runtimeSaveState === "pending-apply" ? "待应用" : loaded ? "最近已加载" : "已保存"}
             onSelect={() => void workspace.selectFile(file.name, false, onSelectAccepted)}
             />
         })}

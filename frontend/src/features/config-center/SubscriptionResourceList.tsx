@@ -96,8 +96,9 @@ function SubscriptionListRow({
   const { used, progress } = subscriptionUsage(item)
   const showProgress = progress != null
   return (
-    <ResourceListRow name={item.name} selected={active} marked={active} disabled={selectionDisabled} onSelect={onSelect} actionCount={2}
-      metadata={<><span>{subscriptionDomain(item.url)}</span>{dirty && <span className="text-status-warning">未保存</span>}{failed && <span className="text-destructive">更新失败</span>}</>}
+    <ResourceListRow name={item.name} selected={active} disabled={selectionDisabled} onSelect={onSelect} actionCount={2}
+      metadata={subscriptionDomain(item.url)}
+      status={updating ? "更新中" : dirty ? <span className="text-status-info">未保存</span> : failed ? <span className="text-destructive">更新失败</span> : "已保存"}
       extra={<>
         {used != null && <span className="flex justify-between gap-2"><span>{formatSubscriptionBytes(used)}{item.totalBytes != null ? ` / ${formatSubscriptionBytes(item.totalBytes)}` : ""}</span>{showProgress && <span>{Math.round(progress)}%</span>}</span>}
         {showProgress && <span className="h-1 overflow-hidden rounded-full bg-muted-foreground/40" role="progressbar" aria-label="流量使用" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}>
@@ -164,15 +165,15 @@ export function SubscriptionResourceList({
         </span>
         <Button
           size="sm"
-          className="ml-auto h-9"
+          className="ml-auto h-10 min-w-24 max-md:min-h-10 max-md:min-w-24"
           disabled={subscription.unavailable || subscription.writeLocked}
           onClick={onAdd}
         >
           <Plus data-icon="inline-start" />
-          新增订阅
+          新建
         </Button>
       </ResourceListHeader>}
-      <div className="flex min-h-0 flex-col overflow-y-auto px-4 pt-1 pb-5 md:px-3">
+      <div className="flex min-h-0 flex-col overflow-y-auto p-2">
         <ResourceListGroup>
         {subscription.newDraft && (
           <SubscriptionListRow

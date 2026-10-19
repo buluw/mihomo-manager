@@ -1,4 +1,33 @@
-import type { ProviderCleanupItem, ProviderCleanupResult, ProviderConfigReference, ProviderRuntimeReferences } from "../api/configClient.ts"
+import type { ManagedProviderFile, ProviderCleanupItem, ProviderConfigReference, ProviderRuntimeReferences } from "../api/configClient.ts"
+
+type CleanupOutcome = Pick<ProviderCleanupItem, "fileName" | "action" | "reason"> & Partial<ProviderCleanupItem>
+
+export function cleanupPresentation(item: ProviderCleanupItem, file?: ManagedProviderFile) {
+  const metadata = file?.category === item.category && file.fileName === item.fileName && file.sha256 === item.sha256 ? file : undefined
+  const configNames = [...new Set(item.configReferences ? item.configReferences.filter(ref => ref.kind !== "unreadable").map(ref => ref.configName) : item.configNames ?? [])]
+  const configUnknown = item.configReferences?.some(ref => ref.kind === "unreadable") ?? false
+  const recordedReference = Boolean(item.runtime?.references.length || item.reason === "runtime_reference")
+  const recordLabel = recordedReference ? "有引用" : item.runtime?.hasSuccessfulRecord === false ? "无成功记录"
+    : item.runtime?.hasSuccessfulRecord === true && item.runtime.scanComplete === true ? "未发现引用" : "记录无法确认"
+  const maintained = metadata?.source === "local" || metadata?.source === "subscription" || item.reason === "maintained"
+  const sources = { manual: "受管文件", external: "外部文件", subscription: "订阅提取", local: "配置提取" }
+  return {
+    configNames, configUnknown, recordedReference, recordLabel, maintained,
+    runtimeUnknown: item.runtime?.uncertain !== false,
+    source: metadata ? sources[metadata.source] : maintained ? "自动提取维护" : "来源无法确认",
+    path: metadata?.referencePath ?? item.fileName,
+  }
+}
+
+export function cleanupSelectionHint(files: ProviderCleanupItem[], catalog: ManagedProviderFile[] = []) {
+  if (!files.length) return "选择文件后清理，可展开详情核对引用和来源。"
+  const views = files.map(item => cleanupPresentation(item, catalog.find(file => file.category === item.category && file.fileName === item.fileName)))
+  const referenced = views.filter(item => item.configNames.length || item.recordedReference).length
+  const unknown = views.filter(item => item.runtimeUnknown || item.configUnknown).length
+  const maintained = views.filter(item => item.maintained).length
+  return [referenced ? referenced + " 个仍有引用，删除会导致文件缺失" : "未发现已记录引用，仍需确认当前运行依赖",
+    unknown ? unknown + " 个依赖无法确认" : "", maintained ? maintained + " 个自动维护文件可能再次生成" : ""].filter(Boolean).join("；")
+}
 
 export function providerReferenceMessage(configReferences?: ProviderConfigReference[], runtime?: ProviderRuntimeReferences) {
   const messages: string[] = []
@@ -36,7 +65,7 @@ export function providerReferenceMessage(configReferences?: ProviderConfigRefere
   return messages.join("；")
 }
 
-export function cleanupReason(item: ProviderCleanupItem) {
+export function cleanupReason(item: CleanupOutcome) {
   const labels: Record<ProviderCleanupItem["reason"], string> = {
     unused: "归属明确，未发现配置及已记录运行文件引用",
     referenced: "配置仍在引用",
@@ -55,7 +84,7 @@ export function cleanupReason(item: ProviderCleanupItem) {
   return labels[item.reason] + (item.configNames?.length ? `：${item.configNames.join("、")}` : "")
 }
 
-export function cleanupSummary(result: ProviderCleanupResult) {
+export function cleanupSummary(result: { files: CleanupOutcome[] }) {
   const removed = result.files.filter((item) => item.action === "deleted").length
   const kept = result.files.filter((item) => item.action === "keep")
   return `已清理 ${removed} 个文件` + (kept.length ? `；保留 ${kept.length} 个：${[...new Set(kept.map(cleanupReason))].join("；")}` : "")

@@ -14,12 +14,15 @@ type CollectionAction = {
   disabled?: boolean
   destructive?: boolean
   checked?: boolean
+  visibility?: "mobile" | "desktop"
   onSelect: () => void
 }
 
 export function CollectionActionsMenu({ groups, description }: { groups: CollectionAction[][]; description?: string }) {
   const [open, setOpen] = useState(false)
   const pendingAction = useRef<(() => void) | null>(null)
+  const mobileGroups = groups.map(group => group.filter(action => action.visibility !== "desktop")).filter(group => group.length)
+  const desktopGroups = groups.map(group => group.filter(action => action.visibility !== "mobile")).filter(group => group.length)
   return <>
     <Sheet open={open} onOpenChange={setOpen} onOpenChangeComplete={next => {
       if (next) return
@@ -29,7 +32,7 @@ export function CollectionActionsMenu({ groups, description }: { groups: Collect
     }}>
       <SheetTrigger render={<Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="集合更多操作" />}><MoreHorizontal /></SheetTrigger>
       <MobileSheetContent title="集合更多操作">
-          {groups.map((group, index) => <Fragment key={index}>
+          {mobileGroups.map((group, index) => <Fragment key={index}>
             {index > 0 && <div className="px-4 py-2"><Separator /></div>}
             {group.map(({ icon: Icon, ...action }) => action.checked !== undefined
               ? <label key={action.label} className="flex min-h-13 items-center gap-3 rounded-lg px-4 py-2.5 text-sm">
@@ -44,9 +47,9 @@ export function CollectionActionsMenu({ groups, description }: { groups: Collect
       </MobileSheetContent>
     </Sheet>
     <DropdownMenu>
-      <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" className="hidden md:inline-flex @min-[800px]/collection:hidden" aria-label="集合更多操作" />}><MoreHorizontal /></DropdownMenuTrigger>
+      <DropdownMenuTrigger render={<Button variant="outline" size="icon-lg" className="hidden md:inline-flex" aria-label="集合更多操作" />}><MoreHorizontal /></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {groups.map((group, index) => <Fragment key={index}>
+        {desktopGroups.map((group, index) => <Fragment key={index}>
           {index > 0 && <DropdownMenuSeparator />}
           <DropdownMenuGroup>{group.map(({ icon: Icon, ...action }) => action.checked !== undefined
             ? <DropdownMenuCheckboxItem key={action.label} checked={action.checked} disabled={action.disabled} onCheckedChange={action.onSelect}>{action.label}</DropdownMenuCheckboxItem>

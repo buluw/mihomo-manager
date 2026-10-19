@@ -13,6 +13,7 @@ import {
   displayedProxyDelaySample,
   listProxyGroups,
   proxyCardPreferenceKey,
+  proxyDelayTarget,
   proxyNodeInfoTarget,
   selectedProxyCardNode,
   sortProxyCards,
@@ -75,11 +76,11 @@ export function Proxies({ notify }: { notify: Notify }) {
   }, [groups, selectedGroup]);
 
   const delayFor = useCallback(
-    (name: string) => displayedProxyDelay(runtime.data[name], actions.delays[name]),
+    (name: string) => displayedProxyDelay(runtime.data[name], actions.delays[proxyDelayTarget(name, runtime.data)]),
     [actions.delays, runtime.data],
   );
   const delaySampleFor = useCallback(
-    (name: string) => displayedProxyDelaySample(runtime.data[name], actions.delays[name]),
+    (name: string) => displayedProxyDelaySample(runtime.data[name], actions.delays[proxyDelayTarget(name, runtime.data)]),
     [actions.delays, runtime.data],
   );
   const cards = useMemo(
@@ -159,8 +160,8 @@ export function Proxies({ notify }: { notify: Notify }) {
   }, [currentNode, nodeInfo]);
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] gap-3 p-4 md:grid-rows-[auto_minmax(0,1fr)]">
-      <div className="hidden min-w-0 flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 md:flex">
+    <div className="grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] gap-3 p-4 lg:grid-rows-[auto_minmax(0,1fr)]">
+      <div className="hidden min-w-0 flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 lg:flex">
         <span className="text-xs font-medium text-muted-foreground">切换配置</span>
         <Select value={configSwitcher.target || null} onValueChange={(value) => value && configSwitcher.setTarget(String(value))} disabled={configSwitcher.busy}>
           <SelectTrigger aria-label="切换配置" className="min-w-0 max-w-72 flex-1"><SelectValue placeholder={configSwitcher.listLoading ? "正在读取配置列表" : "选择配置"} /></SelectTrigger>
@@ -199,8 +200,7 @@ export function Proxies({ notify }: { notify: Notify }) {
               loading={runtime.loading}
               identifyingCountries={actions.identifyingCountries}
               testingGroups={actions.testingGroups}
-              testingNodes={actions.testingNodes}
-              testingCards={actions.testingCards}
+              probeStates={actions.probeStates}
               selectedNode={cardSelection}
               delayFor={delayFor}
               delaySampleFor={delaySampleFor}

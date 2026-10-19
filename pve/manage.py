@@ -53,6 +53,31 @@ def ipv4(value):
     return str(address)
 
 
+def select_bridge(bridges, label, selected):
+    print('  ' + label)
+    for index, bridge in enumerate(bridges, 1):
+        details = [bridge['iface'], bridge['type'], '已启用']
+        address = bridge.get('cidr') or bridge.get('address')
+        if address:
+            details.append('宿主地址 ' + str(address))
+        if bridge.get('gateway'):
+            details.append('网关 ' + str(bridge['gateway']))
+        ports = bridge.get('bridge_ports') or bridge.get('ovs_ports')
+        if ports:
+            details.append('端口 ' + str(ports))
+        if bridge.get('comments'):
+            details.append('备注 ' + ' '.join(str(bridge['comments']).split()))
+        print(f'    [{index}] ' + ' / '.join(details))
+    default = next(str(index) for index, bridge in enumerate(bridges, 1) if bridge['iface'] == selected)
+    while True:
+        choice = prompt('网桥编号', default)
+        try:
+            number(choice, 1, len(bridges))
+            return bridges[int(choice) - 1]['iface']
+        except ValueError as error:
+            print('  ' + str(error))
+
+
 def fetch(url, path, maximum):
     run('curl', '-fsSL', '--proto', '=https', '--proto-redir', '=https', '--retry', '2', '--connect-timeout', '15',
         '--max-time', '600', '--max-filesize', str(maximum), url, '-o', str(path))
@@ -150,25 +175,26 @@ def install(local):
         stores = [line.split()[0] for line in run('pvesm', 'status', '--content', 'rootdir', capture=True).splitlines()[1:] if line.split()[2] == 'active']
         node = os.uname().nodename.split('.')[0]
         networks = json.loads(run('pvesh', 'get', f'/nodes/{node}/network', '--output-format', 'json', capture=True))
-        bridges = sorted(item['iface'] for item in networks if item.get('type') in ('bridge', 'OVSBridge') and item.get('active'))
+        bridges = sorted((item for item in networks if item.get('type') in ('bridge', 'OVSBridge') and item.get('active')), key=lambda item: item['iface'])
         if not stores or not bridges:
             raise ValueError('需要可用的容器存储和网桥。')
+        bridge_names = [item['iface'] for item in bridges]
+        management_bridge = next((item['iface'] for item in bridges if item.get('gateway')), bridge_names[0])
         values = dict(ctid=run('pvesh', 'get', '/cluster/nextid', capture=True).strip().strip('"'), name='mihomo', cores='1', memory='1024', disk='4', storage=stores[0],
-                      bridge0='vmbr0' if 'vmbr0' in bridges else bridges[0], bridge1='vmbr1' if 'vmbr1' in bridges else bridges[-1], mode='1', ip='', gateway='', internal='')
+                      bridge0=management_bridge, bridge1=next((name for name in bridge_names if name != management_bridge), management_bridge), mode='1', ip='', gateway='', internal='')
         while True:
             heading('安装 / 基本设置')
             for key, label in [('ctid', '容器编号'), ('name', '容器名称'), ('cores', 'CPU 核数'), ('memory', '内存 MiB'), ('disk', '磁盘 GiB')]:
                 values[key] = prompt(label, values[key])
             values['storage'] = prompt('存储位置（' + ' / '.join(stores) + '）', values['storage'])
             heading('安装 / 网络设置')
-            print('  可用网桥：' + ' / '.join(bridges))
-            for key, label in [('bridge0', '管理网卡网桥'), ('bridge1', '内部网卡网桥')]:
-                values[key] = prompt(label, values[key])
+            values['bridge0'] = select_bridge(bridges, '管理网卡 eth0：用于访问后台及默认出口，请选择管理网络所在网桥。', values['bridge0'])
             values['mode'] = prompt('管理地址：1 DHCP / 2 手动静态', values['mode'])
             if values['mode'] == '2':
                 values['ip'] = prompt('管理网卡 IPv4（/24）', values['ip'], required=True)
                 suggested = values['ip'].rsplit('.', 1)[0] + '.1'
                 values['gateway'] = prompt('默认网关', values['gateway'] or suggested)
+            values['bridge1'] = select_bridge(bridges, '内部网卡 eth1：连接内部网络或路由设备；地址可稍后配置。', values['bridge1'])
             values['internal'] = prompt('内部网卡 IPv4（/24）', values['internal'])
             try:
                 valid_id(values['ctid'])
@@ -177,7 +203,7 @@ def install(local):
                 number(values['disk'], 2, 65536)
                 if not re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?', values['name']):
                     raise ValueError('容器名称请使用字母、数字和连字符。')
-                if values['storage'] not in stores or any(values[key] not in bridges for key in ('bridge0', 'bridge1')):
+                if values['storage'] not in stores or any(values[key] not in bridge_names for key in ('bridge0', 'bridge1')):
                     raise ValueError('请选择列出的存储和网桥。')
                 if values['mode'] not in ('1', '2'):
                     raise ValueError('管理地址方式请选择 1 或 2。')
@@ -191,9 +217,9 @@ def install(local):
                 print('  ' + str(error)); continue
             heading('安装 / 确认参数')
             print(f"  编号 / 名称   {values['ctid']} / {values['name']}\n  CPU / 内存    {values['cores']} 核 / {values['memory']} MiB\n  磁盘 / 存储   {values['disk']} GiB / {values['storage']}")
-            print(f"  管理网卡      {values['bridge0']} / " + ('DHCP' if values['mode'] == '1' else values['ip'] + '/24，网关 ' + values['gateway']))
-            print(f"  内部网卡      {values['bridge1']} / " + (values['internal'] + '/24' if values['internal'] else '稍后配置'))
-            print('  DNS           继承 PVE 宿主机\n  TUN / 转发    自动配置 / 自动开启')
+            print(f"  管理 eth0     {values['bridge0']} / " + ('DHCP' if values['mode'] == '1' else '静态 ' + values['ip'] + '/24，网关 ' + values['gateway']) + '（后台访问 / 默认出口）')
+            print(f"  内部 eth1     {values['bridge1']} / " + ('静态 ' + values['internal'] + '/24' if values['internal'] else '稍后配置 IP（manual）') + '（内部网络）')
+            print('  DNS           继承 PVE 宿主机\n  TUN 设备权限  将授权给 Core 服务账号\n  IPv4 转发     将在容器内开启\n  Core TUN      由应用的配置决定；初始配置关闭')
             choice = input('\n  [1] 确认安装  [2] 修改参数  [0] 返回：').strip()
             if choice == '0': return
             if choice == '1': break
@@ -222,6 +248,7 @@ def install(local):
         run('pct', 'set', ctid, '--onboot', '1')
         heading('安装完成')
         info(ctid)
+        print('\n  TUN 设备权限已准备，容器 IPv4 转发已开启。\n  Core TUN 由应用的配置决定；初始配置关闭，请在后台配置并应用。')
 
 
 def check_environment_archive(path):

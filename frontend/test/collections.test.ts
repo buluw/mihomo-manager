@@ -1,7 +1,28 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { ConfigError, type ManagedProviderFileSnapshot } from "../src/api/configClient.ts"
+import { ConfigError, type ManagedProviderFileSnapshot, type ProviderCleanupItem } from "../src/api/configClient.ts"
+import { cleanupPresentation, cleanupSelectionHint } from "../src/shared/collectionCleanup.ts"
+
+test("cleanup display keeps recorded references separate from unknown dependencies", () => {
+  const item: ProviderCleanupItem = { category: "proxy", fileName: "nodes.yaml", sha256: "file", identity: "identity", action: "keep", reason: "runtime_unknown",
+    configReferences: [{ configName: "unreadable.yaml", kind: "unreadable" }],
+    runtime: { references: [], uncertain: true, hasSuccessfulRecord: true, scanComplete: true, unknownReason: "core_unverified" } }
+  const file = { category: "proxy" as const, fileName: "nodes.yaml", referencePath: "./providers/nodes.yaml", source: "local" as const, writable: false, sha256: "file", size: 1, updatedAt: "", filterSettings: null, extractionId: "fixture" }
+  const view = cleanupPresentation(item, file)
+  assert.deepEqual(view.configNames, [])
+  assert.equal(view.configUnknown, true)
+  assert.equal(view.recordLabel, "未发现引用")
+  assert.equal(view.runtimeUnknown, true)
+  assert.equal(view.source, "配置提取")
+  assert.equal(view.maintained, true)
+  assert.equal(cleanupPresentation(item, { ...file, sha256: "changed" }).source, "来源无法确认")
+  assert.match(cleanupSelectionHint([item], [file]), /依赖无法确认.*自动维护/)
+  const referenced = { ...item, configReferences: [{ configName: "main.yaml", kind: "identity" as const }], runtime: { ...item.runtime!, references: [{ kind: "path" as const, path: "./providers/nodes.yaml" }] } }
+  assert.equal(cleanupPresentation(referenced).recordLabel, "有引用")
+  assert.deepEqual(cleanupPresentation(referenced).configNames, ["main.yaml"])
+  assert.match(cleanupSelectionHint([referenced]), /仍有引用/)
+})
 import { PROVIDER_OPERATION_TIMEOUT_MS } from "../src/api/controllerClient.ts"
 import { declaredProxyProviderNames } from "../src/features/config-center/configActions.ts"
 import { CollectionRequestController } from "../src/features/providers/collectionRequests.ts"
@@ -29,22 +50,16 @@ import {
   externalManagedConfigDecision,
   managedPendingChangeIds,
   managedProviderDraftIssue,
-  managedProviderApplyTargets,
   managedProviderDiscardState,
   managedProviderOperationPending,
   managedProviderRowOperationPending,
-  managedRuleProviderUnloadConflictMessage,
-  managedRuleProviderUnloadConflicts,
   managementBaselineKey,
   managementBaselineResourcesChanged,
   managementLifecycleState,
   managementLifecycleView,
   reduceManagementLifecycle,
-  shouldSyncManagedHttpCatalog,
-  managedProviderConfigSaveKind,
-  managedProviderSavedContents,
   managedProviderFileHasDraft,
-  managedProviderFileSaveTargets,
+  managedCollectionBodyDrafts,
   reconcileManagedProviderDraft,
   reconcileManagedProviderTextEdit,
   resolveManagedProviderBaseline,
@@ -58,6 +73,7 @@ import {
   validateInlineProviderDraft,
   updateManagedProviderConfig,
   deleteManagedProviderConfig,
+  replaceCollectionUploadDeclaration,
 } from "../src/features/providers/managedProviderYaml.ts"
 import {
   managedHttpCatalog,
@@ -747,43 +763,12 @@ test("current YAML reconciliation feeds structural controls without overwriting 
   assert.equal(referencedOnly.controls[referencedOnlyRule.id].loaded, false)
   assert.deepEqual(referencedOnly.controls[referencedOnlyRule.id].ruleSetRules, ["RULE-SET,remote,DIRECT"])
   assert.equal(managedProviderDraftIssue(referencedOnly.controls, referencedOnly.itemsByCategory), null)
-  const secondRule = { ...referencedOnlyRule, id: "rule:declaration:second", name: "second" }
-  const conflictControls = {
-    ...referencedOnly.controls,
-    [secondRule.id]: {
-      ...referencedOnly.controls[referencedOnlyRule.id],
-      ruleSetRules: ["RULE-SET,second,REJECT", "RULE-SET,second,DIRECT,no-resolve"],
-    },
-  }
-  const conflictBaselines = Object.fromEntries(
-    [referencedOnlyRule, secondRule].map((item) => [item.id, { ...conflictControls[item.id], loaded: true }]),
-  )
-  const conflicts = managedRuleProviderUnloadConflicts(
-    conflictControls,
-    conflictBaselines,
-    [referencedOnlyRule, secondRule],
-  )
-  assert.deepEqual(conflicts, [
-    { providerName: "remote", rule: "RULE-SET,remote,DIRECT" },
-    { providerName: "second", rule: "RULE-SET,second,REJECT" },
-    { providerName: "second", rule: "RULE-SET,second,DIRECT,no-resolve" },
-  ])
-  assert.equal(
-    managedRuleProviderUnloadConflictMessage(conflicts),
-    "请先移除规则引用：remote：RULE-SET,remote,DIRECT；second：RULE-SET,second,REJECT；second：RULE-SET,second,DIRECT,no-resolve",
-  )
-
   const noDeclarationOrReference = noRuleReference.replace(/  remote:\n(?:    .*\n)+(?=rules:)/, "")
   const fullyRemoved = reconcileManagedProviderDraft({ ...ruleSnapshot, content: noDeclarationOrReference }, [], ruleOwners, managedProviderItems)
   const removedRule = fullyRemoved.itemsByCategory.rule.find((item) => item.name === "remote")!
   assert.equal(fullyRemoved.controls[removedRule.id].loaded, false)
   assert.deepEqual(fullyRemoved.controls[removedRule.id].ruleSetRules, [])
   assert.equal(managedProviderDraftIssue(fullyRemoved.controls, fullyRemoved.itemsByCategory), null)
-  assert.deepEqual(managedRuleProviderUnloadConflicts(
-    fullyRemoved.controls,
-    { [removedRule.id]: { ...fullyRemoved.controls[removedRule.id], loaded: true } },
-    [removedRule],
-  ), [])
 })
 
 test("declared manual removal adopts the deleted disk baseline when Controller load fails", async () => {
@@ -935,51 +920,6 @@ test("explicit discard restores all draft state to the latest successful baselin
   assert.equal(appliedReset.configContent, dirtyContent)
   assert.equal(appliedReset.controls[proxyItem.id]?.loaded, false)
 
-})
-
-test("managed apply targets stay within the active category and include only new or changed declarations", () => {
-  const snapshot = {
-    name: "loaded.yaml",
-    path: "/fixture/loaded.yaml",
-    sha256: "a".repeat(64),
-    content: [
-      "proxy-providers:",
-      "  proxy-http: { type: http, url: https://fixture.invalid/proxy, path: ./providers/proxy.yaml }",
-      "rule-providers:",
-      "  adobe: { type: http, url: https://fixture.invalid/adobe, path: ./ruleset/adobe.yaml, behavior: classical }",
-      "  unchanged: { type: http, url: https://fixture.invalid/unchanged, path: ./ruleset/unchanged.yaml, behavior: classical }",
-      "",
-    ].join("\n"),
-  }
-  const owners = [
-    { configName: snapshot.name, category: "proxy" as const, name: "proxy-http", writable: true },
-    { configName: snapshot.name, category: "rule" as const, name: "adobe", writable: true },
-    { configName: snapshot.name, category: "rule" as const, name: "unchanged", writable: true },
-  ]
-  const baseline = reconcileManagedProviderDraft(snapshot, [], owners, managedProviderItems)
-  const proxyDraft = reconcileManagedProviderDraft({
-    ...snapshot,
-    content: snapshot.content.replace("https://fixture.invalid/proxy", "https://fixture.invalid/proxy-v2"),
-  }, [], owners, managedProviderItems)
-  assert.deepEqual(managedProviderApplyTargets(
-    "proxy",
-    [...proxyDraft.itemsByCategory.proxy, ...proxyDraft.itemsByCategory.rule],
-    [...baseline.itemsByCategory.proxy, ...baseline.itemsByCategory.rule],
-    proxyDraft.controls,
-    baseline.controls,
-  ).map((item) => `${item.category}:${item.name}`), ["proxy:proxy-http"])
-
-  const ruleDraft = reconcileManagedProviderDraft({
-    ...snapshot,
-    content: snapshot.content.replace("behavior: classical }", "behavior: domain }"),
-  }, [], owners, managedProviderItems)
-  assert.deepEqual(managedProviderApplyTargets(
-    "rule",
-    [...ruleDraft.itemsByCategory.proxy, ...ruleDraft.itemsByCategory.rule],
-    [...baseline.itemsByCategory.proxy, ...baseline.itemsByCategory.rule],
-    ruleDraft.controls,
-    baseline.controls,
-  ).map((item) => `${item.category}:${item.name}`), ["rule:adobe"])
 })
 
 test("Provider declaration snippets expose only the current named mapping", () => {
@@ -1975,15 +1915,7 @@ test("owned source files are deletable and HTTP rename drafts keep one stable ro
   assert.deepEqual(deleted.rules, ["MATCH,DIRECT"])
 })
 
-test("managed HTTP declarations always use the catalog transaction when ownership participates", () => {
-  const owner = { configName: "fixture.yaml", category: "rule" as const, name: "remote" }
-  assert.equal(shouldSyncManagedHttpCatalog([owner], [owner]), true)
-  assert.equal(shouldSyncManagedHttpCatalog([owner], []), true)
-  assert.equal(shouldSyncManagedHttpCatalog([], [owner]), true)
-  assert.equal(shouldSyncManagedHttpCatalog([], []), false)
-})
-
-function fileBodyApplyFixture() {
+function collectionBodyDraftFixture() {
   const snapshot = {
     name: "loaded.yaml", path: "/fixture/loaded.yaml", sha256: "config-sha",
     content: [
@@ -2011,78 +1943,11 @@ function fileBodyApplyFixture() {
   const ordinary = items.filter((item) => item.access === "manual" || item.access === "external")
   return {
     snapshot, files, owners, items, ordinary,
-    options: {
-      snapshot, fresh: { ...snapshot }, content: snapshot.content, changedItems: ordinary,
-      currentOwners: structuredClone(owners), savedOwners: owners, desiredOwners: desiredManagedHttpOwners(items),
-    },
   }
 }
 
-test("only ordinary File bodies with unchanged source and HTTP ownership can reuse the source", () => {
-  const { options, ordinary, items, owners } = fileBodyApplyFixture()
-  for (const item of ordinary) {
-    assert.equal(managedProviderConfigSaveKind({ ...options, changedItems: [item] }), "reuse")
-  }
-  assert.equal(managedProviderConfigSaveKind({ ...options, currentOwners: [...owners].reverse() }), "reuse")
-  assert.equal(managedProviderConfigSaveKind({ ...options, currentOwners: [], savedOwners: [], desiredOwners: [] }), "reuse")
-  for (const changes of [
-    { changedItems: [] },
-    { fresh: { ...options.fresh, sha256: "changed" } },
-    { fresh: { ...options.fresh, name: "other.yaml" } },
-    { fresh: { ...options.fresh, content: options.content + "# external edit\n" } },
-    ...items.filter((item) => item.access === "inline" || item.access === "http").map((item) => ({ changedItems: [item] })),
-    ...[
-      { writable: false }, { declared: false }, { sha256: null }, { fileName: null },
-      { fileIssue: "missing" as const }, { access: "subscription" as const }, { access: "local" as const },
-    ].map((change) => ({ changedItems: [{ ...ordinary[0]!, ...change }] })),
-  ]) {
-    assert.equal(managedProviderConfigSaveKind({ ...options, ...changes }), "catalog")
-  }
-})
-
-test("declaration, reference, Inline and HTTP ownership changes retain the existing save transaction", () => {
-  const { options, owners, items } = fileBodyApplyFixture()
-  for (const content of [
-    options.content.replace("behavior: domain", "behavior: classical"),
-    options.content.replace("RULE-SET,manual,DIRECT", "RULE-SET,manual,REJECT"),
-    updateInlineProviderContent(options.content, items.find((item) => item.access === "inline")!, "payload:\n  - changed.fixture.invalid\n"),
-  ]) {
-    assert.equal(managedProviderConfigSaveKind({ ...options, content }), "catalog")
-    assert.equal(managedProviderConfigSaveKind({ ...options, content, savedOwners: [], currentOwners: [], desiredOwners: [] }), "file")
-  }
-  for (const currentOwners of [
-    [],
-    [...owners, { ...owners[0]!, name: "added" }],
-    [{ ...owners[0]!, name: "renamed", originalName: "remote" }],
-    [{ ...owners[0]!, writable: false }],
-    [{ ...owners[0]!, declaration: { ...owners[0]!.declaration, interval: 3600 } }],
-    [{ ...owners[0]!, configName: "other.yaml" }],
-  ]) {
-    assert.equal(managedProviderConfigSaveKind({ ...options, currentOwners }), "catalog")
-  }
-  assert.equal(managedProviderConfigSaveKind({ ...options, desiredOwners: [] }), "catalog")
-  assert.equal(managedProviderConfigSaveKind({ ...options, desiredOwners: [{ category: "rule", name: "new" }] }), "catalog")
-  assert.equal(managedProviderConfigSaveKind({ ...options, changedItems: [], savedOwners: [], desiredOwners: [] }), "file")
-})
-
-test("accepted baseline reuses only bodies returned by this save at the same file version and path", () => {
-  const { items, files, ordinary } = fileBodyApplyFixture()
-  assert.deepEqual(managedProviderSavedContents(items, files), Object.fromEntries(ordinary.map((item) => [
-    managedProviderContentKey(item), files.find((file) => file.fileName === item.fileName)!.content,
-  ])))
-  assert.deepEqual(managedProviderSavedContents(items, []), {})
-  assert.equal(Object.keys(managedProviderSavedContents(items, [files[0]!])).length, 1)
-  for (const change of [
-    { sha256: "external-version" }, { referencePath: "./other/manual.yaml" }, { category: "proxy" as const },
-    { fileName: "renamed.yaml" }, { writable: false }, { access: "http" as const },
-    { access: "inline" as const }, { access: "subscription" as const }, { access: "local" as const },
-  ]) {
-    assert.deepEqual(managedProviderSavedContents([{ ...ordinary[0]!, ...change }], files), {})
-  }
-})
-
-test("shared File references keep one body draft and save once while declarations stay independent", () => {
-  const { snapshot, files } = fileBodyApplyFixture()
+test("shared File aliases keep one body draft and independent declarations in workspace saves", () => {
+  const { snapshot, files } = collectionBodyDraftFixture()
   const shared = { ...snapshot, content: snapshot.content.replace("rule-providers:\n", [
     "rule-providers:",
     "  alias: { type: file, behavior: domain, path: ruleset/manual.yaml }",
@@ -2095,12 +1960,13 @@ test("shared File references keep one body draft and save once while declaration
   assert.notEqual(original.id, alias.id)
   assert.equal(managedProviderContentKey(original), managedProviderContentKey(alias))
   assert.notEqual(managedProviderContentKey(original), managedProviderContentKey(independent))
-  const bodies = managedProviderSavedContents(items, files)
+  const bodies = Object.fromEntries(files.map(file => [managedProviderContentKey(items.find(item => item.fileName === file.fileName)!), file.content]))
   const edited = { ...bodies, [managedProviderContentKey(original)]: "payload:\n  - changed.fixture.invalid\n" }
   assert.equal(edited[managedProviderContentKey(alias)], edited[managedProviderContentKey(original)])
   assert.equal(edited[managedProviderContentKey(independent)], bodies[managedProviderContentKey(independent)])
-  const targets = managedProviderFileSaveTargets(items, new Set([managedProviderContentKey(original), managedProviderContentKey(independent)]))
-  assert.deepEqual(targets.map((item) => item.fileName).sort(), ["external.yaml", "manual.yaml"])
+  const targets = managedCollectionBodyDrafts(items, edited, bodies)
+  assert.deepEqual(targets.map(item => item.name).sort(), ["alias", "manual"])
+  assert.ok(targets.every(body => body.content === edited[managedProviderContentKey(original)] && body.expectedSha256 === original.sha256))
 
   const savedFiles = files.map((file) => file.fileName === original.fileName
     ? { ...file, sha256: "saved-next", content: edited[managedProviderContentKey(original)]! } : file)
@@ -2109,10 +1975,12 @@ test("shared File references keep one body draft and save once while declaration
   const nextAlias = refreshed.find((item) => item.name === "alias")!
   assert.equal(nextOriginal.sha256, "saved-next")
   assert.equal(nextAlias.sha256, nextOriginal.sha256)
-  assert.equal(managedProviderSavedContents(refreshed, savedFiles)[managedProviderContentKey(nextAlias)], edited[managedProviderContentKey(original)])
+  assert.deepEqual(managedCollectionBodyDrafts(refreshed, edited, edited), [])
   const secondDraft = { ...edited, [managedProviderContentKey(nextAlias)]: "payload:\n  - second.fixture.invalid\n" }
   assert.equal(secondDraft[managedProviderContentKey(nextOriginal)], secondDraft[managedProviderContentKey(nextAlias)])
-  assert.equal(managedProviderFileSaveTargets(refreshed, new Set([managedProviderContentKey(nextAlias)])).length, 1)
+  const nextBodies = managedCollectionBodyDrafts(refreshed, secondDraft, edited)
+  assert.deepEqual(nextBodies.map(item => item.name).sort(), ["alias", "manual"])
+  assert.ok(nextBodies.every(body => body.expectedSha256 === "saved-next"))
 
   const withoutAlias = updateManagedProviderConfig(shared.content, alias, { loaded: false })
   assert.ok(parse(withoutAlias)["rule-providers"].manual)
@@ -2123,14 +1991,14 @@ test("shared File references keep one body draft and save once while declaration
 })
 
 test("file refresh protects same-file drafts while independent bodies remain refreshable", () => {
-  const { snapshot, files } = fileBodyApplyFixture()
+  const { snapshot, files } = collectionBodyDraftFixture()
   const items = managedProviderItems(snapshot, files, "rule")
   const original = items.find((item) => item.name === "manual")!
   const independent = items.find((item) => item.name === "external")!
   const alias = { ...original, id: "rule:alias", name: "alias", referencePath: "ruleset/manual.yaml" }
   const readonlyAlias = { ...alias, id: "rule:readonly-alias", name: "readonly-alias", access: "local" as const, writable: false }
   const all = [...items, alias, readonlyAlias]
-  const saved = { ...managedProviderSavedContents(items, files), [readonlyAlias.id]: original.content }
+  const saved = { ...Object.fromEntries(files.map(file => [managedProviderContentKey(items.find(item => item.fileName === file.fileName)!), file.content])), [readonlyAlias.id]: original.content }
   const draft = { ...saved, [managedProviderContentKey(original)]: "payload: [changed.fixture.invalid]" }
   const none = new Set<string>()
   const blocked = (item: typeof original, contents = draft, pending = none, declarations = none) =>
@@ -2149,11 +2017,13 @@ test("file refresh protects same-file drafts while independent bodies remain ref
   assert.equal(draft[managedProviderContentKey(original)], "payload: [changed.fixture.invalid]")
 })
 
-test("collection removal blocks only groups losing their final source, including include-all-providers", () => {
+test("collection removal drafts expose groups losing their final source for application diagnostics", () => {
   const content = 'proxy-providers:\n  only: {type: inline, payload: []}\nproxy-groups:\n  - {name: empty-after, type: select, use: [only]}\n  - {name: direct-remains, type: select, use: [only], proxies: [DIRECT]}\n  - {name: all-providers, type: select, include-all-providers: true}\n  - {name: core-fallback, type: select, include-all-proxies: true, use: [only]}\n  - {name: preexisting-empty, type: select}\n';
   const item = managedProviderItems({ name: 'test.yaml', path: '', sha256: 'fixture', content }, [], 'proxy')[0]!;
   assert.deepEqual(groupsEmptiedByRemoval(content, item), ['empty-after', 'all-providers']);
-  assert.throws(() => deleteManagedProviderConfig(content, item), /empty-after.*all-providers/);
+  const removed = parse(deleteManagedProviderConfig(content, item));
+  assert.equal(removed['proxy-providers']?.only, undefined);
+  assert.ok(!removed['proxy-groups'][0].use?.includes('only'));
   const safe = content.replace('use: [only]', 'use: [only], proxies: [DIRECT]').replace('include-all-providers: true', 'include-all: true');
   assert.doesNotThrow(() => deleteManagedProviderConfig(safe, item));
 });
@@ -2171,4 +2041,69 @@ test("unfinished inline and declaration text persists inside only its named sour
   assert.match(saved, /payload: \[unfinished/)
   assert.match(saved, /second:\n    type: \[/)
   assert.match(saved, /rules:/)
+})
+
+
+test("missing collection editors retain both category drafts in one workspace save", () => {
+  const content = 'proxy-providers:\n  one: {type: file, path: ./one.yaml}\nrule-providers:\n  two: {type: file, behavior: classical, path: ./two.yaml}\n'
+  const snapshot = { name: "new.yaml", path: "", sha256: "a".repeat(64), content,
+    collectionPaths: [
+      { category: "proxy" as const, name: "one", sourcePath: "./one.yaml", fileName: "config-0123456789abcdef01234567/one.yaml", referencePath: "./providers/config-0123456789abcdef01234567/one.yaml", status: "missing" as const },
+      { category: "rule" as const, name: "two", sourcePath: "./two.yaml", fileName: "config-0123456789abcdef01234567/two.yaml", referencePath: "./ruleset/config-0123456789abcdef01234567/two.yaml", status: "missing" as const },
+    ] }
+  const proxy = managedProviderItems(snapshot, [], "proxy")[0]!
+  const rule = managedProviderItems(snapshot, [], "rule")[0]!
+  assert.equal(proxy.writable, true)
+  assert.equal(rule.writable, true)
+  let contents = { [managedProviderContentKey(proxy)]: "proxies: [\n" }
+  contents = { ...contents, [managedProviderContentKey(rule)]: "payload: []\n" }
+  const bodies = managedCollectionBodyDrafts([proxy, rule], contents, {})
+  assert.equal(bodies.length, 2)
+  assert.equal(bodies[0]!.content, "proxies: [\n")
+  assert.equal(bodies[0]!.expectedSha256, null)
+  assert.deepEqual(managedCollectionBodyDrafts([proxy, rule], contents, {}, [{ category: "proxy", name: "one" }]), [bodies[1]])
+  const protectedSnapshot = { ...snapshot, collectionPaths: snapshot.collectionPaths.map((entry) => ({ ...entry, writable: false })) }
+  assert.equal(managedProviderItems(protectedSnapshot, [], "proxy")[0]!.writable, false)
+})
+
+test("mapped collection body reads use the selected source directory", () => {
+  const path = "./providers/config-0123456789abcdef01234567/shared.yaml"
+  const file = { fileName: "config-0123456789abcdef01234567/shared.yaml", referencePath: path, category: "proxy" as const,
+    source: "manual" as const, writable: true, sha256: "b".repeat(64), size: 1, updatedAt: "", filterSettings: null, extractionId: null, ownerId: null }
+  const snapshot = { name: "source.yaml", path: "", sha256: "a".repeat(64), content: 'proxy-providers:\n  one: {type: file, path: ./shared.yaml}\n',
+    collectionPaths: [{ category: "proxy" as const, name: "one", sourcePath: "./shared.yaml", fileName: file.fileName, referencePath: path }] }
+  const item = managedProviderItems(snapshot, [file], "proxy")[0]!
+  assert.equal(item.fileName, file.fileName)
+  assert.equal(item.sha256, file.sha256)
+  const other = { ...file, fileName: file.fileName.replace("0123456789abcdef01234567", "111111111111111111111111"), referencePath: path.replace("0123456789abcdef01234567", "111111111111111111111111") }
+  assert.equal(managedProviderItems(snapshot, [other], "proxy").find((item) => item.name === "one")!.sha256, null)
+})
+
+
+test("uploaded declarations and deletion update direct and compound rule references in the source draft", () => {
+  const content = 'rule-providers:\n  local: {type: file, behavior: classical, path: ./local.yaml}\nrules:\n  - RULE-SET,local,DIRECT\n  - AND,((RULE-SET,local),(NETWORK,TCP)),DIRECT\n  - MATCH,DIRECT\nsub-rules:\n  nested:\n    - RULE-SET,local,DIRECT\n    - DOMAIN,example.invalid,DIRECT\n'
+  const snapshot = { name: "source.yaml", path: "", sha256: "a".repeat(64), content }
+  const item = managedProviderItems(snapshot, [], "rule").find((entry) => entry.name === "local")!
+  const renamed = parse(replaceCollectionUploadDeclaration(content, item, "renamed", { ...item.declaration, path: "./renamed.yaml" }))
+  assert.equal(renamed["rule-providers"].local, undefined)
+  assert.equal(renamed["rule-providers"].renamed.path, "./renamed.yaml")
+  assert.ok(renamed.rules[1].includes("RULE-SET,renamed"))
+  assert.equal(renamed["sub-rules"].nested[0], "RULE-SET,renamed,DIRECT")
+  const removed = parse(deleteManagedProviderConfig(content, item))
+  assert.deepEqual(removed.rules, ["MATCH,DIRECT"])
+  assert.deepEqual(removed["sub-rules"].nested, ["DOMAIN,example.invalid,DIRECT"])
+})
+
+test("workspace body drafts track ordinary files, saved baselines and pending removals", () => {
+  const { files, items, ordinary } = collectionBodyDraftFixture()
+  const saved = Object.fromEntries(files.map(file => [managedProviderContentKey(items.find(item => item.fileName === file.fileName)!), file.content]))
+  const changed = ordinary[0]!
+  const contents = { ...saved, [managedProviderContentKey(changed)]: "payload: [changed.fixture.invalid]" }
+  const expected = [{ category: changed.category, name: changed.name, content: contents[managedProviderContentKey(changed)], expectedSha256: changed.sha256 }]
+  assert.deepEqual(managedCollectionBodyDrafts(items, contents, saved), expected)
+  assert.deepEqual(managedCollectionBodyDrafts(items, contents, contents), [])
+  assert.deepEqual(managedCollectionBodyDrafts(items, contents, saved, [{ category: changed.category, name: changed.name }]), [])
+  assert.deepEqual(managedCollectionBodyDrafts(items.map(item => item.id === changed.id ? { ...item, pendingRemoval: true } : item), contents, saved), [])
+  const sourceBodies = Object.fromEntries(items.filter(item => item.access === "http" || item.access === "inline").map(item => [managedProviderContentKey(item), "payload: [source.fixture.invalid]"]))
+  assert.deepEqual(managedCollectionBodyDrafts(items, { ...contents, ...sourceBodies }, saved), expected)
 })

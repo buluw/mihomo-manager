@@ -11,7 +11,7 @@ import type { useProxyConfigSwitcher } from "./useProxyConfigSwitcher";
 export function ProxyConfigDrawer({ switcher }: { switcher: ReturnType<typeof useProxyConfigSwitcher> }) {
   const [open, setOpen] = useState(false);
   return <Sheet open={open} onOpenChange={(next) => { if (!switcher.busy) setOpen(next); }}>
-    <SheetTrigger render={<Button variant="ghost" size="sm" className="ml-auto h-11 min-w-0 max-w-[55%] md:hidden" aria-label="切换配置" />}>
+    <SheetTrigger render={<Button variant="ghost" size="lg" className="ml-auto h-11 min-w-0 max-w-[45%] lg:hidden" aria-label="切换配置" />}>
       <FileSliders data-icon="inline-start" /><span className="truncate">{switcher.loaded || "配置身份未知"}</span>
     </SheetTrigger>
     <MobileSheetContent title="切换配置" description="点选配置后校验并应用，再次点选可重新应用。" bodyClassName="flex flex-col gap-1">

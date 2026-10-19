@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { recordValue, type ProviderCategory } from "./collectionYaml.js";
-import { FILE_NAME_PATTERN, hash } from "./controlledFiles.js";
+import { validProviderKey, hash } from "./controlledFiles.js";
 import type { LocalProviderExtraction, RetainedProviderFile } from "./types.js";
 
 export type ProviderRenameJournal = {
@@ -88,8 +88,8 @@ export function parseLegacyRenameJournal(value: unknown): ProviderOperationJourn
     (journal.category !== undefined && journal.category !== "proxy" && journal.category !== "rule") ||
     (journal.kind !== "manual" && journal.kind !== "subscription" && journal.kind !== "local" && journal.kind !== "external") ||
     (journal.subscriptionId !== null && typeof journal.subscriptionId !== "string") ||
-    typeof journal.sourceFileName !== "string" || !FILE_NAME_PATTERN.test(journal.sourceFileName) ||
-    typeof journal.targetFileName !== "string" || !FILE_NAME_PATTERN.test(journal.targetFileName) ||
+    typeof journal.sourceFileName !== "string" || !validProviderKey(journal.sourceFileName) ||
+    typeof journal.targetFileName !== "string" || !validProviderKey(journal.targetFileName) ||
     typeof journal.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(journal.sha256) ||
     (journal.caseOnly !== undefined && journal.caseOnly !== true) ||
     (journal.caseProofFileName !== undefined &&
@@ -131,7 +131,7 @@ export function parseOperationJournal(value: unknown): ProviderOperationJournal 
     const entry = recordValue(candidate);
     const settings = recordValue(entry?.filterSettings);
     return Boolean(entry) && typeof entry!.id === "string" && typeof entry!.configName === "string" &&
-      validSha(entry!.sourceSha256) && typeof entry!.fileName === "string" && FILE_NAME_PATTERN.test(entry!.fileName) &&
+      validSha(entry!.sourceSha256) && typeof entry!.fileName === "string" && validProviderKey(entry!.fileName) &&
       (entry!.providerSha256 === null || validSha(entry!.providerSha256)) &&
       Number.isSafeInteger(entry!.nodeCount) && (entry!.nodeCount as number) >= 0 &&
       typeof entry!.enabled === "boolean" && Boolean(settings) &&
@@ -151,7 +151,7 @@ export function parseOperationJournal(value: unknown): ProviderOperationJournal 
     (journal.restoreManual === undefined || (journal.restoreManual === true &&
       journal.configName === undefined && journal.configBeforeSha256 === undefined && journal.configAfterSha256 === undefined)) &&
     (journal.category === "proxy" || journal.category === "rule") &&
-    typeof journal.fileName === "string" && FILE_NAME_PATTERN.test(journal.fileName) &&
+    typeof journal.fileName === "string" && validProviderKey(journal.fileName) &&
     validSha(journal.sha256) && validHidden(journal.stageFileName) &&
     validOptionalProof(journal.proofDevice, journal.proofInode) &&
     journal.localSourceFileName === undefined && journal.localSourceSha256 === undefined &&
@@ -168,7 +168,7 @@ export function parseOperationJournal(value: unknown): ProviderOperationJournal 
       (recordValue(journal.maintainedOwner)?.kind === "local" || recordValue(journal.maintainedOwner)?.kind === "subscription") &&
       typeof recordValue(journal.maintainedOwner)?.id === "string" && Boolean(recordValue(journal.maintainedOwner)?.id))) &&
     (journal.category === "proxy" || journal.category === "rule") &&
-    typeof journal.fileName === "string" && FILE_NAME_PATTERN.test(journal.fileName) &&
+    typeof journal.fileName === "string" && validProviderKey(journal.fileName) &&
     validSha(journal.sha256) && validHidden(journal.backupFileName) &&
     validOptionalProof(journal.proofDevice, journal.proofInode) &&
     validConfigTransactionFields(journal) &&
@@ -180,13 +180,13 @@ export function parseOperationJournal(value: unknown): ProviderOperationJournal 
     journal.localSourceDevice, journal.localSourceInode];
   const hasNoLocalSource = localSourceValues.every((value) => value === undefined);
   const hasLocalSource = localSourceValues.every((value) => value !== undefined) &&
-    typeof journal.localSourceFileName === "string" && FILE_NAME_PATTERN.test(journal.localSourceFileName) &&
+    typeof journal.localSourceFileName === "string" && validProviderKey(journal.localSourceFileName) &&
     validSha(journal.localSourceSha256) && typeof journal.localSourceDevice === "string" &&
     /^\d+$/.test(journal.localSourceDevice) && typeof journal.localSourceInode === "string" &&
     /^[1-9]\d*$/.test(journal.localSourceInode);
   if (journal.operation === "publish" && typeof journal.subscriptionId === "string" &&
     (journal.ownerKind === undefined || journal.ownerKind === "subscription" || journal.ownerKind === "local") &&
-    typeof journal.fileName === "string" && FILE_NAME_PATTERN.test(journal.fileName) &&
+    typeof journal.fileName === "string" && validProviderKey(journal.fileName) &&
     (journal.beforeSha256 === null || validSha(journal.beforeSha256)) && validSha(journal.intendedSha256) &&
     validHidden(journal.stageFileName) &&
     (journal.anchorFileName === undefined || validHidden(journal.anchorFileName)) &&

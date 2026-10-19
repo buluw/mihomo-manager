@@ -17,6 +17,7 @@ import { useMergeConfigWorkspace } from "./useMergeConfigWorkspace"
 import { ConfigDetailHeader } from "./ConfigMobileNavigation"
 
 export function MergeConfigWorkspace({
+  resourcesHeader,
   subscriptions,
   configFiles,
   notify,
@@ -29,6 +30,7 @@ export function MergeConfigWorkspace({
   onOpenDetail,
   onBack,
 }: {
+  resourcesHeader: ReactNode
   subscriptions: ReturnType<typeof useSubscriptionWorkspace>
   configFiles: ConfigFileRecord[]
   notify: Notify
@@ -53,14 +55,15 @@ export function MergeConfigWorkspace({
         {mobileListTitle}
         <span className="text-xs text-muted-foreground tabular-nums">{workspace.relations.length}</span>
       </ResourceListHeader>}
-      <div className="flex min-h-0 flex-col overflow-y-auto px-4 pt-1 pb-5 md:px-3">
+      <div className="flex min-h-0 flex-col overflow-y-auto p-2">
         <ResourceListGroup>
         {workspace.relations.map((relation) => {
           const name = relation.kind === "subscription" ? relation.subscription.name : relation.local?.configName ?? relation.localRelations[0]?.configName ?? relation.config?.name ?? "源配置已不存在"
           const provider = relation.kind === "subscription" ? relation.subscription.providerName : relation.local ? relation.local.fileName.replace(/\.ya?ml$/i, "") : relation.conflict ? "存在多个提取关系" : "尚未配置"
           const selected = workspace.active?.id === relation.id
-          return <ResourceListRow key={relation.id} name={name} selected={selected} marked={selected}
-            metadata={<><span>{provider || "尚未命名"}</span>{selected && workspace.dirty && <span className="text-status-warning">未保存</span>}</>}
+          return <ResourceListRow key={relation.id} name={name} selected={selected}
+            metadata={provider || "尚未命名"}
+            status={selected && workspace.dirty ? <span className="text-status-info">未保存</span> : relation.kind === "subscription" ? relation.subscription.extractProvider ? "已启用" : "未启用" : relation.conflict ? "关系冲突" : relation.local?.enabled ? "已启用" : "未启用"}
             disabled={workspace.busy || workspace.loading} onSelect={() => { void workspace.select(relation).then(accepted => { if (accepted) onOpenDetail() }) }} />
         })}
         </ResourceListGroup>
@@ -74,16 +77,10 @@ export function MergeConfigWorkspace({
   const editingDisabled = workspace.busy || relationConflict || (workspace.catalogReady && !workspace.draftSynchronized)
   const actionDisabled = editingDisabled || !workspace.draftSynchronized
   const detailTitle = active ? (active.kind === "subscription" ? active.subscription.name : active.local?.configName ?? active.localRelations[0]?.configName ?? active.config?.name ?? "源配置已不存在") : "代理集提取"
-  return <>
-    <ResourceWorkspace
+  return <ResourceWorkspace
       idPrefix="config-center"
-      resources={list()}
-      mobileResources={list(true)}
-      mobileNavigation={{ detailOpen: mobileDetailOpen, header: <ConfigDetailHeader title={detailTitle} onBack={onBack} /> }}
-      resizeHandleLabel="调整配置来源列表宽度"
-    >
-      {() => <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
-        <WorkspaceToolbar variant="resource-editor">
+      toolbar={        <WorkspaceToolbar variant="resource-editor" className="flex-wrap">
+          <span className="min-w-0 flex-1 truncate">{detailTitle}</span>
           <div className="ml-auto flex gap-1">
             {workspace.cleanupAvailable && <Button variant="destructive" size="sm" disabled={workspace.busy || workspace.loading} onClick={() => void workspace.cleanup()}><Trash2 data-icon="inline-start" />清理关系</Button>}
             <Button variant="outline" size="sm" disabled={workspace.busy} onClick={() => void workspace.refresh()}><RefreshCw data-icon="inline-start" />刷新</Button>
@@ -91,7 +88,16 @@ export function MergeConfigWorkspace({
               {workspace.busy ? <Spinner data-icon="inline-start" /> : <Save data-icon="inline-start" />}保存
             </Button>
           </div>
-        </WorkspaceToolbar>
+        </WorkspaceToolbar>}
+      resourcesHeader={resourcesHeader}
+      resources={list()}
+      mobileResources={list(true)}
+      mobileNavigation={{ detailOpen: mobileDetailOpen, header: <ConfigDetailHeader title={detailTitle} onBack={onBack} /> }}
+      status={<WorkspaceStatusBar>{workspace.loading ? "正在读取代理集提取" : null}</WorkspaceStatusBar>}
+      resizeHandleLabel="调整配置来源列表宽度"
+    >
+      {() => <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)]">
+
         <div className="min-h-0 overflow-y-auto p-5">
           {active && draft ? <div className="grid max-w-2xl content-start gap-5">
               {active.kind === "local" && !active.config && <FieldError>源配置已删除；现有提取关系仍保留</FieldError>}
@@ -104,6 +110,4 @@ export function MergeConfigWorkspace({
         </div>
       </div>}
     </ResourceWorkspace>
-    {workspace.loading && <WorkspaceStatusBar>正在读取代理集提取</WorkspaceStatusBar>}
-  </>
 }

@@ -24,6 +24,8 @@ export function sourceDiagnostics(content: string, providers: ProviderFileIssue[
       const filePath = document.getIn([...path, "path"])
       add([...path, "path"], item.status === "missing"
         ? `集合「${item.name}」已声明，但声明中的文件「${filePath}」找不到，请导入或恢复文件。`
+        : item.status === "conflict" ? `集合「${item.name}」与同一配置中的其他集合映射到同一文件，请调整 path。`
+        : item.status === "ownership_unknown" ? `集合「${item.name}」的旧文件归属无法确认，请明确选择受控集合文件。`
         : `集合「${item.name}」的声明文件${item.status === "outside_scope" ? "超出受控目录" : "不可读取"}。`)
     }
   }

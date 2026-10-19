@@ -112,6 +112,7 @@ export function desiredManagedHttpOwners(items: ManagedProviderItem[]) {
 }
 
 export function managedProviderModificationReason(item: ManagedProviderItem) {
+  if (item.declared && item.declaration?.type === "file" && (item.access === "manual" || item.access === "external")) return null
   if (item.access === "inline" && item.declared) return null
   if (item.writable && (item.access === "manual" || item.access === "http")) return null
   if ((item.access === "subscription" || item.access === "local") && item.ownerId && item.sha256) return null
@@ -204,8 +205,11 @@ export function managedProviderItems(
   for (const [name, raw] of Object.entries(declarations)) {
     const declaration = recordValue(raw)
     if (!declaration) continue
-    const path = normalizedReference(declaration.path)
-    const file = path
+    const mapping = snapshot.collectionPaths?.find((entry) => entry.category === category && entry.name === name && entry.sourcePath === declaration.path)
+      ?? snapshot.collectionPaths?.find((entry) => entry.category === category && entry.sourcePath === declaration.path)
+    const path = normalizedReference(mapping?.referencePath ?? declaration.path)
+    const issue = mapping?.status ?? snapshot.providerIssues?.find((entry) => entry.category === category && entry.name === name)?.status
+    const file = path && (snapshot.collectionPaths === undefined || mapping || /(?:^|\/)config-[a-f0-9]{24}\//.test(path))
       ? files.find((candidate) =>
         candidate.category !== "unknown" &&
         normalizedReference(candidate.referencePath) === path)
@@ -222,16 +226,17 @@ export function managedProviderItems(
     const groups = groupState(config, name)
     const canonicalFileName = file?.fileName.replace(/\.ya?ml$/i, "")
     const httpRecord = access === "http" ? httpRecords.find((entry) => entry.name === name) : undefined
+    const newFile = declaration.type === "file" && !file && (issue === "missing" || (snapshot.collectionPaths !== undefined && !mapping && !issue))
     items.push({
       id: file && access !== "inline" && access !== "http" && name === canonicalFileName
         ? `${category}:file:${file.fileName}`
         : `${category}:declaration:${httpRecord?.originalName ?? name}`,
       category,
       name,
-      fileName: file?.fileName ?? null,
+      fileName: file?.fileName ?? mapping?.fileName ?? null,
       referencePath: file?.referencePath ?? (path ? `./${path}` : null),
       access,
-      writable: access === "inline" || (access !== "http" && Boolean(file?.writable)) || (access === "http" && manualHttpNames.has(name)),
+      writable: access === "inline" || (access !== "http" && mapping?.writable !== false && (Boolean(file?.writable) || newFile)) || (access === "http" && manualHttpNames.has(name)),
       declared: true,
       declaration,
       content: access === "inline"
@@ -247,7 +252,7 @@ export function managedProviderItems(
       groups: groups.names,
       selectedGroups: groups.selected,
       ruleSetRules: category === "rule" ? ruleSetRules(config, name) : [],
-      fileIssue: snapshot.providerIssues?.find((issue) => issue.category === category && issue.name === name)?.status,
+      fileIssue: issue ?? (newFile ? "missing" : undefined),
       implicitGroups: groups.implicit,
     })
   }

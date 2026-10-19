@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ConfigError, readManagerSettings, refreshProxyCountries, type ProxyAddresses } from "@/api/configClient";
-import { controllerApi } from "@/api/controllerClient";
-import { useAnimatedAction, withMinimumSpin } from "@/hooks/useAnimatedAction";
+import { readControllerProxyDelay, type ControllerDelayFailure } from "@/api/controllerClient";
+import { useAnimatedAction } from "@/hooks/useAnimatedAction";
 import { AbortableRequestPool } from "@/shared/requestLifecycle";
 import { directDelayTestUrl } from "@/shared/directDelay";
 import type { Json, Notify } from "@/shared/types";
@@ -11,13 +11,16 @@ import {
   proxyDelayTarget,
   isDirectProxy,
   DIRECT_DELAY_TEST_URL,
-  requestProxyDelay,
+  proxyDelayIdentity,
+  proxyDelayFailure,
+  uniqueProxyDelayTargets,
   proxyNodeDelayRequest,
   measurableProxyCardMembers,
   runProxyCardDelayTests,
   type ProxyCardModel,
   type ProxyDelaySample,
 } from "./proxyLogic";
+import { ProxyDelayScheduler, type ProxyDelayPhase, type ProxyDelayPriority } from "./proxyDelayScheduler";
 
 type ProxyActionRuntime = {
   addresses: ProxyAddresses;
@@ -33,11 +36,9 @@ export function useProxyActions(
 ) {
   const [delays, setDelays] = useState<Record<string, ProxyDelaySample>>({});
   const [testingGroups, setTestingGroups] = useState<Set<string>>(new Set());
-  const [testingNodes, setTestingNodes] = useState<Set<string>>(new Set());
-  const [testingCards, setTestingCards] = useState<Set<string>>(new Set());
-  const testingCardsRef = useRef(new Set<string>());
+  const [probeStates, setProbeStates] = useState<Record<string, ProxyDelayPhase>>({});
+  const scheduler = useRef<ProxyDelayScheduler | null>(null);
   const testingGroupsRef = useRef(new Set<string>());
-  const pendingTests = useRef(new Map<string, Promise<number>>());
   const lastDirectDelayUrl = useRef<string | null>(null);
   const lifecycle = useRef(0);
   const actions = useRef<AbortableRequestPool | null>(null);
@@ -49,9 +50,16 @@ export function useProxyActions(
   useEffect(() => {
     const activeActions = actions.current ?? new AbortableRequestPool();
     actions.current = activeActions;
+    const activeScheduler = new ProxyDelayScheduler(states => {
+      if (scheduler.current === activeScheduler) setProbeStates(states);
+    });
+    scheduler.current = activeScheduler;
+    setProbeStates({});
     lifecycle.current += 1;
     return () => {
       lifecycle.current += 1;
+      scheduler.current = null;
+      activeScheduler.dispose();
       activeActions.dispose();
       if (actions.current === activeActions) actions.current = null;
     };
@@ -89,72 +97,50 @@ export function useProxyActions(
     }
   }, [notify, runCountryLookup, runtime]);
 
-  const measure = useCallback((name: string) => {
+  const measure = useCallback((name: string, priority: ProxyDelayPriority) => {
     const target = proxyDelayTarget(name, data);
-    const identity = JSON.stringify([providerByNode[target] || "", target]);
-    const activeActions = actions.current;
-    if (!activeActions) return Promise.reject(new Error("测速会话已关闭"));
-    return requestProxyDelay(pendingTests.current, identity, async () => {
-      const action = activeActions.begin();
-      const activeLifecycle = lifecycle.current;
-      setTestingNodes(current => new Set(current).add(target));
+    const identity = proxyDelayIdentity(name, data, providerByNode);
+    const activeScheduler = scheduler.current;
+    const activeLifecycle = lifecycle.current;
+    if (!activeScheduler) return Promise.reject(new DOMException("测速会话已关闭", "AbortError"));
+    return activeScheduler.request(identity, priority, async signal => {
       let delay: number | null = null;
+      let failure: ControllerDelayFailure | undefined;
       try {
         let directUrl: string | undefined;
         if (isDirectProxy(data[target])) {
           try {
-            directUrl = directDelayTestUrl((await readManagerSettings(action.signal)).directDelayTest);
+            directUrl = directDelayTestUrl((await readManagerSettings(signal)).directDelayTest);
             lastDirectDelayUrl.current = directUrl;
           } catch (error) {
-            if (action.signal.aborted) throw error;
+            if (signal.aborted) throw error;
             directUrl = lastDirectDelayUrl.current ?? DIRECT_DELAY_TEST_URL;
-            notify(`直连测速设置读取失败，本次使用${lastDirectDelayUrl.current ? "上次读取的地址" : "默认小米地址"}`, "error");
           }
         }
-        const result = await withMinimumSpin(controllerApi<Json>(
-          proxyNodeDelayRequest(target, providerByNode[target], data[target], directUrl), { signal: action.signal },
-        ));
-        delay = Number(result.delay) > 0 ? Number(result.delay) : null;
-        return delay ?? 0;
+        delay = await readControllerProxyDelay(proxyNodeDelayRequest(target, providerByNode[target], data[target], directUrl), signal);
+        return delay;
+      } catch (error) {
+        if (!signal.aborted) failure = proxyDelayFailure(error);
+        throw error;
       } finally {
-        activeActions.finish(action);
-        if (!action.signal.aborted && lifecycle.current === activeLifecycle) {
-          setDelays(current => ({ ...current, [target]: { delay, testedAt: Date.now() } }));
-          setTestingNodes(current => { const next = new Set(current); next.delete(target); return next; });
+        if (!signal.aborted && lifecycle.current === activeLifecycle) {
+          setDelays(current => ({ ...current, [target]: { delay, testedAt: Date.now(), ...(failure ? { failure } : {}) } }));
         }
       }
     });
-  }, [data, notify, providerByNode]);
+  }, [data, providerByNode]);
 
   const testNode = useCallback(async (name: string) => {
-    const activeLifecycle = lifecycle.current;
-    try {
-      const delay = await measure(name);
-      if (lifecycle.current === activeLifecycle) setDelays(current => ({ ...current, [name]: { delay: delay || null, testedAt: Date.now() } }));
-    } catch (error) {
-      if (lifecycle.current === activeLifecycle) notify(`${name} 测速失败：${(error as Error).message}`, "error");
-    }
-  }, [measure, notify]);
+    try { await measure(name, "manual"); }
+    catch { /* measure publishes the result; the scheduler settles cancellation. */ }
+  }, [measure]);
 
   const testCard = useCallback(async (card: ProxyCardModel) => {
-    if (!card.grouped || testingCardsRef.current.has(card.key)) return;
+    if (!card.grouped) return;
     const members = measurableProxyCardMembers(card, data, providerByNode);
-    if (!members.length) {
-      notify("该组合没有可测速的真实节点", "error");
-      return;
-    }
-    const activeLifecycle = lifecycle.current;
-    testingCardsRef.current = new Set(testingCardsRef.current).add(card.key);
-    setTestingCards(testingCardsRef.current);
-    try {
-      await runProxyCardDelayTests(members, ({ name }) => measure(name), (name, delay) => {
-        if (lifecycle.current === activeLifecycle) setDelays(current => ({ ...current, [name]: { delay, testedAt: Date.now() } }));
-      });
-    } finally {
-      const next = new Set(testingCardsRef.current); next.delete(card.key); testingCardsRef.current = next;
-      if (lifecycle.current === activeLifecycle) setTestingCards(next);
-    }
-  }, [data, measure, notify, providerByNode]);
+    if (!members.length) return;
+    await runProxyCardDelayTests(members, ({ name }) => measure(name, "manual"));
+  }, [data, measure, providerByNode]);
 
   const testGroup = useCallback(async (groupName: string) => {
     if (testingGroupsRef.current.has(groupName)) return;
@@ -162,26 +148,20 @@ export function useProxyActions(
     testingGroupsRef.current = new Set(testingGroupsRef.current).add(groupName);
     setTestingGroups(testingGroupsRef.current);
     try {
-      const members = [...new Set(((data[groupName]?.all || []) as unknown[]).map(String))].map(name => ({ name }));
-      const result = await runProxyCardDelayTests(members, ({ name }) => measure(name), (name, delay) => {
-        if (lifecycle.current === activeLifecycle) setDelays(current => ({ ...current, [name]: { delay, testedAt: Date.now() } }));
-      });
-      if (lifecycle.current === activeLifecycle) {
-        const message = `${groupName} 测速完成：成功 ${result.succeeded}，失败 ${result.failed}`;
-        if (result.failed) notify(message, "error");
-        else notify(message);
-      }
+      const members = uniqueProxyDelayTargets(((data[groupName]?.all || []) as unknown[]).map(String), data, providerByNode);
+      await runProxyCardDelayTests(members, ({ name }) => measure(name, "batch"));
     } finally {
-      const next = new Set(testingGroupsRef.current); next.delete(groupName); testingGroupsRef.current = next;
-      if (lifecycle.current === activeLifecycle) setTestingGroups(next);
+      if (lifecycle.current === activeLifecycle) {
+        const next = new Set(testingGroupsRef.current); next.delete(groupName); testingGroupsRef.current = next;
+        setTestingGroups(next);
+      }
     }
-  }, [data, measure, notify]);
+  }, [data, measure, providerByNode]);
 
   return {
     delays,
     testingGroups,
-    testingNodes,
-    testingCards,
+    probeStates,
     identifyingCountries,
     identifyCountries,
     testNode,

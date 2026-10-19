@@ -637,7 +637,7 @@ export function useConfigWorkspace(notify: Notify, initialRuntimeView: RuntimeCo
     setValidation("running")
     setMessage("正在使用 Mihomo 校验")
     try {
-      await validateConfig(content, request.signal)
+      await validateConfig(content, request.signal, activeName ?? undefined)
       if (!isCurrent()) return
       setProviderIssues(source.name, source.content)
       setCoreCheck(null)
@@ -666,7 +666,7 @@ export function useConfigWorkspace(notify: Notify, initialRuntimeView: RuntimeCo
     const content = contentRef.current
     const sha256 = sha256Ref.current
     const dirty = dirtyRef.current
-    if (!activeName || !sha256 || busyRef.current || mutationRef.current || (!saveOnly && dirty)) return
+    if (!activeName || !sha256 || busyRef.current || mutationRef.current) return
     const foreground = publishCoordinator.current.beginForeground()
     if (!foreground) return
     const selectedName = activeName
@@ -722,7 +722,7 @@ export function useConfigWorkspace(notify: Notify, initialRuntimeView: RuntimeCo
       }
       publishRuntimeState(selectedName, "synced")
       setMessage(`配置${control.completed}，共享记录已保存`)
-      notify(`${selectedName} ${control.completed}`)
+      notify(`${selectedName} ${control.completed}${recorded.collectionCleanup?.length ? `；${cleanupSummary({ files: recorded.collectionCleanup })}` : ""}`)
       void runtime.refresh()
     } catch (error) {
       if (!mounted.current) return

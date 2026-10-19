@@ -231,18 +231,50 @@ export function groupsEmptiedByRemoval(content: string, item: ManagedProviderIte
 }
 
 export function deleteManagedProviderConfig(content: string, item: ManagedProviderItem) {
-  const empty = groupsEmptiedByRemoval(content, item)
-  if (empty.length) throw new Error(`删除会使以下代理组失去所有来源：${empty.join("、")}。请先调整代理组来源或处理这些组。`)
   const withoutDeclaration = updateManagedProviderConfig(content, item, { loaded: false })
   if (item.category !== "rule") return withoutDeclaration
   const document = parseDocument(withoutDeclaration)
-  const rules = document.get("rules", true)
-  if (!isSeq(rules)) return withoutDeclaration
-  rules.items = rules.items.filter((node) => !(
-    isScalar(node) && typeof node.value === "string" &&
-    node.value.split(",", 3)[0] === "RULE-SET" &&
-    node.value.split(",", 3)[1] === item.name
-  ))
+  rewriteRuleCollectionReferences(document, item.name, null)
+  return document.toString({ lineWidth: 0 })
+}
+
+function rewriteRuleCollectionReferences(document: ReturnType<typeof parseDocument>, name: string, nextName: string | null) {
+  const rewrite = (rules: unknown) => {
+    if (!isSeq(rules)) return
+    rules.items = rules.items.filter((node) => {
+      if (!isScalar(node) || typeof node.value !== "string") return true
+      let referenced = false
+      const next = node.value.replace(/(^|\()([ \t]*RULE-SET[ \t]*,[ \t]*)([^,()]+)/g, (whole, prefix, type, provider) => {
+        if (provider.trim() !== name) return whole
+        referenced = true
+        return nextName === null ? whole : prefix + type + nextName
+      })
+      if (referenced && nextName === null) return false
+      node.value = next
+      return true
+    })
+  }
+  rewrite(document.get("rules", true))
+  const subRules = document.get("sub-rules", true)
+  if (isMap(subRules)) for (const pair of subRules.items) rewrite(pair.value)
+}
+
+export function replaceCollectionUploadDeclaration(content: string, item: ManagedProviderItem, name: string, declaration: Record<string, unknown>) {
+  const document = parseDocument(content)
+  if (document.errors.length) throw new Error("源配置 YAML 无法解析")
+  const section = providerSection(item.category)
+  if (name !== item.name && document.hasIn([section, name])) throw new Error("集合名称已存在")
+  document.deleteIn([section, item.name])
+  document.setIn([section, name], declaration)
+  if (name !== item.name && item.category === "proxy") {
+    const groups = document.get("proxy-groups", true)
+    if (isSeq(groups)) for (const group of groups.items) {
+      if (!isMap(group)) continue
+      const use = group.get("use", true)
+      if (isSeq(use)) for (const node of use.items) if (isScalar(node) && node.value === item.name) node.value = name
+    }
+  }
+  if (name !== item.name && item.category === "rule") rewriteRuleCollectionReferences(document, item.name, name)
   return document.toString({ lineWidth: 0 })
 }
 

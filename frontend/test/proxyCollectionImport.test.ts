@@ -1,28 +1,43 @@
 import { proxyCollectionCount, ruleCollectionCount } from "../src/shared/collectionContent.ts"
 import assert from "node:assert/strict"
 import test from "node:test"
-import { collectionUploadMatches, collectionUploadTargets, createCollectionDraft, latestMissingCollectionDeclaration, patchUploadDeclaration, readUploadDeclaration, proxyCollectionGroups } from "../src/features/providers/proxyCollectionImport.ts"
+import { collectionUploadMatches, collectionUploadTargets, createCollectionDraft, patchUploadDeclaration, readUploadDeclaration, proxyCollectionGroups } from "../src/features/providers/proxyCollectionImport.ts"
 import { managedCollectionItems, managedProviderItems } from "../src/features/providers/managedProviderModel.ts"
-import { updateManagedProviderConfig } from "../src/features/providers/managedProviderYaml.ts"
+import { replaceCollectionUploadDeclaration, updateManagedProviderConfig } from "../src/features/providers/managedProviderYaml.ts"
 import { parse } from "yaml"
+import { assertCollectionPathAvailable, collectionFileName, patchCollectionIdentity, stageCollectionSettings, suggestedCollectionFileName } from "../src/features/providers/collectionNaming.ts"
 
-test("adopting a latest missing collection declaration retains the input and binds its latest path", () => {
+test("collection filenames are readable, editable and scoped by declaration path", () => {
+  assert.equal(suggestedCollectionFileName("香港 节点"), "香港 节点.yaml")
+  assert.equal(suggestedCollectionFileName("../工作/节点"), "工作-节点.yaml")
+  assert.equal(collectionFileName("my-nodes"), "my-nodes.yaml")
+  assert.throws(() => collectionFileName("../nodes.yaml"))
+  assert.throws(() => collectionFileName(""))
+  const source = "proxy-providers: {one: {type: file, path: ./nodes.yaml}}"
+  assert.throws(() => assertCollectionPathAvailable(source, "proxy", "nodes.yaml"), /路径/)
+  assert.doesNotThrow(() => assertCollectionPathAvailable(source, "rule", "./nodes.yaml"))
+  assert.doesNotThrow(() => assertCollectionPathAvailable(source, "proxy", "./other/nodes.yaml"))
+  assert.doesNotThrow(() => assertCollectionPathAvailable(source, "proxy", "./nodes.yaml", "one"))
+})
+
+test("identity form edits retain declaration fields and allow intermediate input", () => {
+  const snippet = "old: {type: file, path: ./nodes.yaml, health-check: {enable: true}}"
+  const empty = patchCollectionIdentity(snippet, { name: "", path: "./" })
+  const fixed = parse(patchCollectionIdentity(empty, { name: "renamed", path: "./friendly.yaml" }))
+  assert.deepEqual(fixed.renamed, { type: "file", path: "./friendly.yaml", "health-check": { enable: true } })
+})
+
+test("staged missing collection rename retains proxy and compound rule references", () => {
   for (const category of ["proxy", "rule"] as const) {
-    const directory = category === "proxy" ? "providers" : "ruleset"
-    const draft = { category, operationId: "retained-operation", name: "sample", groupNames: ["Route"],
-      content: category === "proxy" ? "proxies: [{name: draft, type: direct}]" : "payload: [example.invalid]",
-      snippet: "sample: {type: file, path: ./" + directory + "/old.yaml, behavior: domain}" }
-    const source = { name: "A.yaml", sha256: "latest", path: "/configs/A.yaml",
-      content: category + "-providers:\n  sample: {type: file, path: ./" + directory + "/new.yaml, behavior: domain, interval: 600}\n",
-      providerIssues: [{ category, name: "sample", status: "missing" as const }] }
-    const rebased = { ...draft, snippet: latestMissingCollectionDeclaration(draft, source) }
-    assert.equal(parse(rebased.snippet).sample.path, "./" + directory + "/new.yaml")
-    assert.equal(parse(rebased.snippet).sample.interval, 600)
-    assert.equal(rebased.content, draft.content)
-    assert.equal(rebased.operationId, draft.operationId)
-    assert.deepEqual(rebased.groupNames, draft.groupNames)
-    assert.throws(() => latestMissingCollectionDeclaration(draft, { ...source, providerIssues: [] }), /目标已变化/)
-    assert.throws(() => latestMissingCollectionDeclaration(draft, { ...source, content: source.content.replace("type: file", "type: http") }), /目标已变化/)
+    const snapshot = { name: "A.yaml", path: "/configs/A.yaml", sha256: "a", content: `${category}-providers:\n  old: {type: file, path: ./old.yaml, behavior: classical}\nproxy-groups: [{name: Route, type: select, proxies: [DIRECT], use: [old]}]\nrules: ["RULE-SET,old,DIRECT", "AND,((RULE-SET,old),(DOMAIN,example.invalid)),DIRECT"]\n`, providerIssues: [{ category, name: "old", status: "missing" as const }] }
+    const item = managedProviderItems(snapshot, [], category)[0]!
+    const staged = stageCollectionSettings(snapshot.content, item, { snippet: "renamed: {type: file, path: ./friendly.yaml, behavior: classical}", loaded: true, selectedGroups: ["Route"] })
+    const result = parse(staged.content)
+    assert.equal(result[category + "-providers"].old, undefined)
+    assert.equal(result[category + "-providers"].renamed.path, "./friendly.yaml")
+    if (category === "proxy") assert.deepEqual(result["proxy-groups"][0].use, ["renamed"])
+    else assert.deepEqual(result.rules, ["RULE-SET,renamed,DIRECT", "AND,((RULE-SET,renamed),(DOMAIN,example.invalid)),DIRECT"])
+    assert.throws(() => stageCollectionSettings(snapshot.content, item, { snippet: "other: {type: http, path: ./cache.yaml}", loaded: true, selectedGroups: [] }), /类型/)
   }
 })
 
@@ -35,6 +50,33 @@ test("upload declaration form edits preserve custom settings and keep file bodie
   assert.equal(readUploadDeclaration(patchUploadDeclaration(empty, "rule", { name: "fixed" }), "rule").name, "fixed")
   assert.throws(() => readUploadDeclaration(original.replace("type: file", "type: http"), "rule"))
   assert.throws(() => readUploadDeclaration(original + '  payload: [example.invalid]\n', "rule"))
+})
+
+test("uploaded File creation and replacement retain validated declaration fields and references", () => {
+  const source = 'proxy-groups: [{name: Route, type: select, proxies: [DIRECT]}]\nrules: ["MATCH,DIRECT"]\n'
+  for (const category of ["proxy", "rule"] as const) {
+    const snippet = category === "proxy"
+      ? 'sample: {type: file, path: ./sample.yaml, filter: "^HK", health-check: {enable: true, url: https://example.invalid/health, interval: 600}}'
+      : 'sample: {type: file, path: ./sample.yaml, behavior: domain, format: yaml, size-limit: 5000}'
+    const uploaded = readUploadDeclaration(snippet, category)
+    const input = { operationId: "sample-operation", name: uploaded.name, content: category === "proxy" ? "proxies: []" : "payload: []", groupNames: ["Route"], behavior: "domain", ruleSetRules: ["RULE-SET,sample,Route"] }
+    const created = createCollectionDraft(source, input, "file", "", category, String(uploaded.declaration.path), uploaded.declaration)
+    const parsed = parse(created.content)
+    assert.deepEqual(parsed[category + "-providers"].sample, uploaded.declaration)
+    if (category === "proxy") assert.deepEqual(parsed["proxy-groups"][0].use, ["sample"])
+    else assert.deepEqual(parsed.rules, ["RULE-SET,sample,Route", "MATCH,DIRECT"])
+    const snapshot = { name: "source.yaml", path: "", sha256: "source", content: created.content }
+    const item = managedProviderItems(snapshot, [], category).find(item => item.name === "sample")!
+    const nextDeclaration = { ...uploaded.declaration, "size-limit": 7000 }
+    const replaced = parse(replaceCollectionUploadDeclaration(created.content, item, "sample", nextDeclaration))
+    assert.deepEqual(replaced[category + "-providers"].sample, nextDeclaration)
+    assert.deepEqual(replaced["proxy-groups"], parsed["proxy-groups"])
+    assert.deepEqual(replaced.rules, parsed.rules)
+    const ordinary = parse(createCollectionDraft(source, input, "file", "", category, "./ordinary.yaml").content)
+    assert.deepEqual(ordinary[category + "-providers"].sample, category === "proxy"
+      ? { type: "file", path: "./ordinary.yaml" }
+      : { type: "file", behavior: "domain", format: "yaml", path: "./ordinary.yaml" })
+  }
 })
 
 test("Inline and HTTP creation share group validation and preserve unrelated configuration", () => {

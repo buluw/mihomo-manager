@@ -4,16 +4,14 @@ import { ResourceListGroup, ResourceListRow } from "@/components/patterns/resour
 import { Badge } from "@/components/ui/badge"
 import {
   Empty,
-  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Spinner } from "@/components/ui/spinner"
-import { cn } from "@/lib/utils"
 
-import { useLayoutEffect, useRef, type ReactNode } from "react"
+import { useLayoutEffect, useRef } from "react"
 import {
   providerDisplayName,
   providerItemCount,
@@ -36,7 +34,7 @@ export function CollectionResourceList({
   pendingNames = new Set<string>(),
   mergedNames = new Set<string>(),
   descriptions = {},
-  emptyActions,
+  statuses = {},
 }: {
   category: ProviderCategory
   entries: Array<[string, ProviderPayload]>
@@ -49,7 +47,7 @@ export function CollectionResourceList({
   pendingNames?: ReadonlySet<string>
   mergedNames?: ReadonlySet<string>
   descriptions?: Record<string, string>
-  emptyActions?: ReactNode
+  statuses?: Record<string, string>
 }) {
   const effectiveWritableNames = writableNames
   const effectiveUnavailableNames = unavailableNames
@@ -60,16 +58,10 @@ export function CollectionResourceList({
       scrollRef.current.scrollTop = categoryScrollTops[category] ?? 0
     }
   }, [category])
-  const groups = [
-    { label: "可编辑", entries: entries.filter(([name]) => effectiveWritableNames.has(name)), tone: "writable" as const },
-    { label: "正在读取配置", entries: entries.filter(([name]) => effectivePendingNames.has(name) && !effectiveWritableNames.has(name)), tone: "pending" as const },
-    { label: "需先加载配置", entries: entries.filter(([name]) => effectiveUnavailableNames.has(name)), tone: "unavailable" as const },
-    { label: "只读", entries: entries.filter(([name]) => !effectiveWritableNames.has(name) && !effectivePendingNames.has(name) && !effectiveUnavailableNames.has(name)), tone: "readonly" as const },
-  ].filter((group) => group.entries.length > 0)
   return (
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)]">
 
-      <div ref={scrollRef} onScroll={(e) => { categoryScrollTops[category] = e.currentTarget.scrollTop }} className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 pt-1 pb-5 md:px-3">
+      <div ref={scrollRef} onScroll={(e) => { categoryScrollTops[category] = e.currentTarget.scrollTop }} className="flex min-h-0 flex-col overflow-y-auto p-2">
         {entries.length === 0 ? (
           <Empty className="rounded-none p-3">
             <EmptyHeader>
@@ -88,26 +80,21 @@ export function CollectionResourceList({
                     : "当前源配置没有此类集合。")}
               </EmptyDescription>
             </EmptyHeader>
-            {emptyActions && <EmptyContent>{emptyActions}</EmptyContent>}
           </Empty>
         ) : (
-          groups.map((group) => (
-            <section key={group.label} className="grid shrink-0 gap-2">
-              <div className={cn("px-3 text-xs", group.tone === "unavailable" ? "text-destructive" : "text-muted-foreground")}>{group.label}</div>
               <ResourceListGroup>
-              {group.entries
+              {[...entries]
                 .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
                 .map(([name, provider]) => {
             const displayName = providerDisplayName(name)
             return (
-              <ResourceListRow key={name} selected={activeName === name} marked={activeName === name} onSelect={() => onSelect(name)}
+              <ResourceListRow key={name} selected={activeName === name} onSelect={() => onSelect(name)}
                 name={<>{displayName}{mergedNames.has(name) && <Badge variant="secondary" className="ml-1 text-[10px]">合并</Badge>}</>}
+                status={statuses[name] ?? (effectivePendingNames.has(name) ? "正在读取" : effectiveUnavailableNames.has(name) ? "需加载" : effectiveWritableNames.has(name) ? "可编辑" : "只读")}
                 metadata={descriptions[name] ?? `${providerSource(provider)} · ${providerItemCount(category, provider)} ${category === "proxy" ? "个节点" : "条规则"}`} />
             )
               })}
               </ResourceListGroup>
-            </section>
-          ))
         )}
       </div>
     </div>

@@ -1,4 +1,4 @@
-import type { ConfigSnapshot, ManagedHttpProviderOwner, ManagedProviderFile, ManagedProviderFileSnapshot } from "../../api/configClient.ts"
+import type { ConfigSnapshot, ManagedHttpProviderOwner, ManagedProviderFile } from "../../api/configClient.ts"
 import { parseYamlDraft as parseDocument } from "../../shared/yamlDraft.ts"
 import type { ProviderCategory } from "./collectionViewModel.ts"
 import {
@@ -64,31 +64,6 @@ export function managedProviderDraftIssue(
   return null
 }
 
-export type ManagedRuleProviderUnloadConflict = {
-  providerName: string
-  rule: string
-}
-
-export function managedRuleProviderUnloadConflicts(
-  controls: Record<string, ManagedProviderControls>,
-  baselineControls: Record<string, ManagedProviderControls>,
-  ruleItems: ManagedProviderItem[],
-) {
-  return ruleItems.flatMap((item) => {
-    const baseline = baselineControls[item.id]
-    const current = controls[item.id]
-    if (!baseline?.loaded || !current || current.loaded) return []
-    return current.ruleSetRules.map((rule) => ({ providerName: item.name, rule }))
-  })
-}
-
-export function managedRuleProviderUnloadConflictMessage(
-  conflicts: ManagedRuleProviderUnloadConflict[],
-) {
-  if (conflicts.length === 0) return null
-  return `请先移除规则引用：${conflicts.map(({ providerName, rule }) => `${providerName}：${rule}`).join("；")}`
-}
-
 export function managedProviderOperationPending(
   itemId: string,
   pendingItemIds: ReadonlySet<string>,
@@ -106,25 +81,6 @@ export function managedProviderRowOperationPending(
 ) {
   if (item.draftOriginName && !contentDirtyIds.has(item.id) && !declarationDirtyIds.has(item.id)) return false
   return managedProviderOperationPending(item.id, pendingItemIds, contentDirtyIds, declarationDirtyIds)
-}
-
-export function managedProviderApplyTargets(
-  category: ProviderCategory,
-  currentItems: ManagedProviderItem[],
-  baselineItems: ManagedProviderItem[],
-  currentControls: Record<string, ManagedProviderControls>,
-  baselineControls: Record<string, ManagedProviderControls>,
-) {
-  const baselineById = new Map(baselineItems.map((item) => [item.id, item]))
-  return currentItems.filter((item) => {
-    if (item.category !== category || !item.declared) return false
-    const currentLoaded = currentControls[item.id]?.loaded ?? item.declared
-    if (!currentLoaded) return false
-    const baseline = baselineById.get(item.id)
-    const baselineLoaded = baselineControls[item.id]?.loaded ?? baseline?.declared ?? false
-    if (!baseline || !baselineLoaded) return true
-    return JSON.stringify(item.declaration) !== JSON.stringify(baseline.declaration)
-  })
 }
 
 export function managementBaselineKey(managementOnly: boolean, name: string | null, sha256: string | null) {
@@ -251,14 +207,13 @@ export function managementLifecycleView(state: ManagementLifecycleState, busy: b
   }
 }
 
-export function managedProviderFileSaveTargets(items: ManagedProviderItem[], changedKeys: ReadonlySet<string>) {
-  const seen = new Set<string>()
-  return items.filter((item) => {
-    const key = managedProviderContentKey(item)
-    if (item.access === "inline" || !changedKeys.has(key) || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+export function managedCollectionBodyDrafts(items: ManagedProviderItem[], contents: Record<string, string>, savedContents: Record<string, string>,
+  removals: Array<{ category: ProviderCategory; name: string }> = []) {
+  return items.filter((item) => !item.pendingRemoval && item.declaration?.type === "file" &&
+    !removals.some((removed) => removed.category === item.category && removed.name === item.name) &&
+    contents[managedProviderContentKey(item)] !== undefined &&
+    (item.fileIssue === "missing" || contents[managedProviderContentKey(item)] !== (savedContents[managedProviderContentKey(item)] ?? item.content)))
+    .map((item) => ({ category: item.category, name: item.name, content: contents[managedProviderContentKey(item)]!, expectedSha256: item.sha256 }))
 }
 
 export function managedProviderFileHasDraft(
@@ -390,52 +345,6 @@ export function managedProviderRuntimePaired(
   status: ManagementLifecycleState["status"],
 ) {
   return Boolean(snapshot && confirmedSourceName === snapshot.name && status === "ready")
-}
-
-export function shouldSyncManagedHttpCatalog(
-  saved: readonly Pick<ManagedHttpProviderOwner, "category" | "name">[],
-  desired: readonly Pick<ManagedHttpProviderOwner, "category" | "name">[],
-) {
-  return saved.length > 0 || desired.length > 0
-}
-
-export function managedProviderConfigSaveKind(options: {
-  snapshot: ConfigSnapshot
-  fresh: ConfigSnapshot
-  content: string
-  changedItems: readonly ManagedProviderItem[]
-  currentOwners: readonly ManagedHttpProviderOwner[]
-  savedOwners: readonly ManagedHttpProviderOwner[]
-  desiredOwners: readonly Pick<ManagedHttpProviderOwner, "category" | "name">[]
-}) {
-  const ownerIdentity = (owners: readonly ManagedHttpProviderOwner[]) => JSON.stringify(owners.map((owner) => ({
-    configName: owner.configName, category: owner.category, name: owner.name,
-    writable: owner.writable !== false, declaration: owner.declaration,
-    originalName: owner.originalName, originalDeclaration: owner.originalDeclaration,
-  })).sort((a, b) => `${a.category}:${a.name}`.localeCompare(`${b.category}:${b.name}`)))
-  const ownershipKeys = (owners: readonly Pick<ManagedHttpProviderOwner, "category" | "name">[]) =>
-    JSON.stringify(owners.map((owner) => `${owner.category}:${owner.name}`).sort())
-  const onlyFileBodies = options.changedItems.length > 0 && options.changedItems.every((item) =>
-    item.declared && item.writable && !item.fileIssue && item.fileName && item.sha256 &&
-    (item.access === "manual" || item.access === "external"))
-  if (onlyFileBodies && options.snapshot.name === options.fresh.name && options.snapshot.sha256 === options.fresh.sha256 &&
-    options.content === options.snapshot.content && options.content === options.fresh.content &&
-    ownerIdentity(options.currentOwners) === ownerIdentity(options.savedOwners) &&
-    ownershipKeys(options.desiredOwners) === ownershipKeys(options.savedOwners.filter((owner) => owner.writable !== false))) {
-    return "reuse" as const
-  }
-  return shouldSyncManagedHttpCatalog(options.savedOwners, options.desiredOwners) ? "catalog" as const : "file" as const
-}
-
-export function managedProviderSavedContents(items: ManagedProviderItem[], savedFiles: ManagedProviderFileSnapshot[]) {
-  const contents: Record<string, string> = {}
-  for (const item of items) {
-    if (!item.writable || (item.access !== "manual" && item.access !== "external")) continue
-    const saved = savedFiles.find((file) => file.category === item.category && file.fileName === item.fileName &&
-      normalizedReference(file.referencePath) === normalizedReference(item.referencePath) && file.sha256 === item.sha256)
-    if (saved) contents[managedProviderContentKey(item)] = saved.content
-  }
-  return contents
 }
 
 export function externalManagedConfigDecision(options: {

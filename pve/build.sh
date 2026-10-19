@@ -15,6 +15,7 @@ if [[ $mode == prepare ]]; then
 elif [[ $mode == pack ]]; then
     id=${2:?build CT ID required}; out=$(realpath "${3:?private output directory required}")
     runtime=$(realpath "${4:?runtime package required}"); sha=${5:?runtime SHA256 required}
+    geo=$(realpath "${6:?staged public GEO directory required}")
     [[ $id =~ ^[1-9][0-9]{2,8}$ && $out != / && $sha =~ ^[a-f0-9]{64}$ ]] || exit 2
     [[ $(pct status "$id") == 'status: stopped' ]] || exit 2
     pct config "$id" | grep -q '^description: mihomo-pve-build' || exit 2
@@ -22,7 +23,7 @@ elif [[ $mode == pack ]]; then
     if ! mountpoint -q "$root"; then pct mount "$id"; fi
     part=
     trap '[[ -z "$part" ]] || rm -f -- "$part"; pct unmount "$id" >/dev/null 2>&1 || true' EXIT
-    python3 "$here/sanitize.py" "$root" "$here" "$runtime" "$sha" >"$out/template-build.json"
+    python3 "$here/sanitize.py" "$root" "$here" "$runtime" "$sha" "$geo" >"$out/template-build.json"
     version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["managerVersion"])' "$out/template-build.json")
     artifact="mihomo-manager-pve-debian12-amd64-v${version}-candidate.tar.zst"
     [[ ! -e "$out/$artifact" ]] || { echo 'Output already exists.' >&2; exit 2; }

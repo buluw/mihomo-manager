@@ -199,6 +199,8 @@ test("production configd wiring never authorizes collection cleanup from a succe
   Object.assign(env, { MIHOMO_CONFIG_PATH: configPath, MIHOMO_DATA_DIR: root,
     MIHOMO_BINARY_PATH: process.execPath, MIHOMO_PROVIDER_DIR: join(root, "providers"),
     MIHOMO_RULE_PROVIDER_DIR: join(root, "ruleset"), CONFIGD_HOST: "127.0.0.1", CONFIGD_PORT: String(port) });
+  // The historical source exists when configd registers legacy path semantics.
+  await writeFile(join(root, "selected.yaml"), "proxy-providers:\n  p: {type: file, path: ./providers/retained.yaml}\nrule-providers:\n  r: {type: file, behavior: domain, path: ./ruleset/retained.yaml}\n");
   child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../src/index.ts", import.meta.url))], {
     env, stdio: ["ignore", "pipe", "pipe"],
   });
@@ -217,7 +219,6 @@ test("production configd wiring never authorizes collection cleanup from a succe
     assert.equal(created.status, 201);
     await created.arrayBuffer();
   }
-  await writeFile(join(root, "selected.yaml"), "proxy-providers:\n  p: {type: file, path: ./providers/retained.yaml}\nrule-providers:\n  r: {type: file, behavior: domain, path: ./ruleset/retained.yaml}\n");
   const selected = await (await request("/files/selected.yaml")).json() as { sha256: string };
   const preview = await (await request("/files/selected.yaml/delete-preview", "POST", { expectedSha256: selected.sha256 })).json() as {
     files: Array<{ category: string; fileName: string; sha256: string; identity: string; action: string; reason: string }>;

@@ -235,11 +235,15 @@ export function createConfigdServer(options: ConfigdServerOptions) {
           throw new RequestError("name and expectedSha256 are required");
         }
         if (!/^[a-f0-9]{64}$/i.test(body.expectedSha256)) throw new RequestError("expectedSha256 is invalid");
-        const renameFile = () => options.store.renameUnqueued(oldName, body.name as string, body.expectedSha256 as string);
-        const rollbackFile = (snapshot: Awaited<ReturnType<typeof renameFile>>) =>
-          options.store.renameUnqueued(snapshot.name, oldName, snapshot.sha256).then(() => undefined);
+        const renameSource = () => options.store.renameUnqueued(oldName, body.name as string, body.expectedSha256 as string);
+        const renameFile = () => options.providerFiles
+          ? options.providerFiles.renameConfigSourceUnqueued(oldName, body.name as string, renameSource) : renameSource();
+        const rollbackFile = (snapshot: Awaited<ReturnType<typeof renameFile>>) => (options.providerFiles
+          ? options.providerFiles.renameConfigSourceUnqueued(snapshot.name, oldName, () => options.store.renameUnqueued(snapshot.name, oldName, snapshot.sha256))
+          : options.store.renameUnqueued(snapshot.name, oldName, snapshot.sha256)).then(() => undefined);
         const renamed = options.subscriptions
           ? await options.subscriptions.renameConfigFile(oldName, body.name, renameFile, rollbackFile)
+          : options.providerFiles ? await options.providerFiles.renameConfigSource(oldName, body.name, renameSource)
           : await options.store.rename(oldName, body.name, body.expectedSha256);
         emitConfigChange("rename", renamed.name, renamed.sha256, oldName);
         return json(response, 200, renamed);
@@ -258,6 +262,20 @@ export function createConfigdServer(options: ConfigdServerOptions) {
         const saved = await (options.providerFiles?.saveConfig(name, body.content, body.expectedSha256) ??
           options.store.saveFile(name, body.content, body.expectedSha256));
         return json(response, 200, await finalizeConfigSave(saved));
+      }
+      const collectionWorkspace = url.pathname.match(/^\/files\/([^/]+)\/collections(\/validate)?$/);
+      if (collectionWorkspace && (request.method === "PUT" || (request.method === "POST" && collectionWorkspace[2])) && options.providerFiles) {
+        const body = await readJson(request, options.maxBodyBytes);
+        if (typeof body.content !== "string" || typeof body.expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(body.expectedSha256) ||
+          !Array.isArray(body.bodies) || !Array.isArray(body.removals) ||
+          body.bodies.some((entry) => !entry || !["proxy", "rule"].includes(entry.category) || typeof entry.name !== "string" || typeof entry.content !== "string" ||
+            (entry.expectedSha256 !== null && (typeof entry.expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(entry.expectedSha256)))) ||
+          body.removals.some((entry) => !entry || !["proxy", "rule"].includes(entry.category) || typeof entry.name !== "string")) throw new RequestError("invalid collection workspace");
+        if (body.httpProviders !== undefined && (!Array.isArray(body.httpProviders) || body.httpProviders.some((entry) => !entry || !["proxy", "rule"].includes(entry.category) || typeof entry.name !== "string"))) throw new RequestError("invalid HTTP collection catalog");
+        if (collectionWorkspace[2]) return json(response, 200, await options.providerFiles.validateCollectionWorkspace(pathId(collectionWorkspace[1]!), body.content, body.bodies));
+        return json(response, 200, await finalizeConfigSave(await options.providerFiles.saveCollectionWorkspace({
+          configName: pathId(collectionWorkspace[1]!), content: body.content, expectedSha256: body.expectedSha256, bodies: body.bodies, removals: body.removals, httpProviders: body.httpProviders,
+        })));
       }
       if (configFile && request.method === "DELETE") {
         const body = await readJson(request, options.maxBodyBytes);
@@ -378,10 +396,21 @@ export function createConfigdServer(options: ConfigdServerOptions) {
         if (typeof body.attemptId !== "string" || !["succeeded", "failed", "unknown"].includes(body.result as string)) {
           throw new RequestError("invalid load result");
         }
-        return json(response, 200, await options.managerSettings.finishLoad({
+        const state = await options.managerSettings.finishLoad({
           attemptId: body.attemptId, expectedVersion: body.expectedVersion as number,
           result: body.result as "succeeded" | "failed" | "unknown",
-        }));
+        });
+        let collectionCleanup;
+        if (body.result === "succeeded" && state.lastSuccessful && options.providerFiles) {
+          const generated = state.lastSuccessful.generated;
+          try {
+            collectionCleanup = await options.providerFiles.cleanupAppliedCollections(generated.sourceName, generated.sourceSha256, async () => {
+              const current = await options.managerSettings!.readAppliedUnqueued();
+              return { content: current.content, uncertain: current.state.version !== state.version || current.state.lastAttempt?.id !== body.attemptId || current.state.lastAttempt?.status !== "succeeded", hasSuccessfulRecord: true };
+            });
+          } catch { collectionCleanup = [{ fileName: "集合文件", action: "keep", reason: "delete_failed" }]; }
+        }
+        return json(response, 200, { ...state, ...(collectionCleanup ? { collectionCleanup } : {}) });
       }
       if (options.proxyMergeSettings && request.method === "GET" && url.pathname === "/proxy-merge-settings") {
         return json(response, 200, await options.proxyMergeSettings.read());
@@ -446,7 +475,7 @@ export function createConfigdServer(options: ConfigdServerOptions) {
       if (request.method === "POST" && url.pathname === "/validate") {
         const body = await readJson(request, options.maxBodyBytes);
         if (typeof body.content !== "string") throw new RequestError("content is required");
-        await options.store.validate(body.content);
+        await options.store.validate(body.content, typeof body.sourceName === "string" ? body.sourceName : undefined);
         return json(response, 200, { valid: true });
       }
       if (request.method === "PUT" && url.pathname === "/file") {
@@ -714,15 +743,15 @@ export function createConfigdServer(options: ConfigdServerOptions) {
         });
         return json(response, 201, { ...result, config: await finalizeConfigSave(result.config) });
       }
-      const managedProvider = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/([^/]+)$/);
-      const managedProviderRename = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/([^/]+)\/rename$/);
-      const managedProviderRenameWithConfig = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/([^/]+)\/rename-with-config$/);
-      const managedProviderDeleteWithConfig = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/([^/]+)\/delete-with-config$/);
-      const managedProviderSourceDelete = url.pathname.match(/^\/managed-providers\/proxy\/([^/]+)\/delete-source$/);
-      const managedProviderFilters = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/([^/]+)\/filter-settings$/);
-      const managedProviderFiltersOnly = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/([^/]+)\/filter-settings-only$/);
-      const managedProviderFilterPreview = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/([^/]+)\/filter-preview$/);
-      const managedProviderValidate = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/([^/]+)\/validate$/);
+      const managedProvider = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/((?:config-[a-f0-9]{24}\/)?[^/]+)$/);
+      const managedProviderRename = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/((?:config-[a-f0-9]{24}\/)?[^/]+)\/rename$/);
+      const managedProviderRenameWithConfig = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/((?:config-[a-f0-9]{24}\/)?[^/]+)\/rename-with-config$/);
+      const managedProviderDeleteWithConfig = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/((?:config-[a-f0-9]{24}\/)?[^/]+)\/delete-with-config$/);
+      const managedProviderSourceDelete = url.pathname.match(/^\/managed-providers\/proxy\/((?:config-[a-f0-9]{24}\/)?[^/]+)\/delete-source$/);
+      const managedProviderFilters = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/((?:config-[a-f0-9]{24}\/)?[^/]+)\/filter-settings$/);
+      const managedProviderFiltersOnly = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/((?:config-[a-f0-9]{24}\/)?[^/]+)\/filter-settings-only$/);
+      const managedProviderFilterPreview = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/((?:config-[a-f0-9]{24}\/)?[^/]+)\/filter-preview$/);
+      const managedProviderValidate = url.pathname.match(/^\/managed-providers\/(proxy|rule)\/((?:config-[a-f0-9]{24}\/)?[^/]+)\/validate$/);
       if (providerFiles && managedProviderRenameWithConfig && request.method === "POST") {
         const body = await readJson(request, options.maxBodyBytes);
         if (

@@ -4,7 +4,7 @@ export function configProviderIssues(error: unknown): ProviderFileIssue[] {
   if (!(error instanceof ConfigError) || error.code !== "provider_files_unavailable" || !Array.isArray(error.details.issues)) return []
   return error.details.issues.filter((issue): issue is ProviderFileIssue => issue &&
     (issue.category === "proxy" || issue.category === "rule") && typeof issue.name === "string" &&
-    ["missing", "outside_scope", "unreadable"].includes(issue.status))
+    ["missing", "outside_scope", "unreadable", "conflict", "ownership_unknown"].includes(issue.status))
 }
 
 export function matchesCollectionImportSource(source: ConfigSnapshot, current: {

@@ -9,9 +9,7 @@ import {
   saveCollectionReadOnly,
   saveCollectionSettings,
   type CollectionPreferences,
-  applyManagedHttpProviders,
   createConfigChangeSource,
-  createManagedCollection,
   readCollectionUploadDeclaration,
   readProviderPayload,
   type ProxyCollectionInput,
@@ -25,8 +23,8 @@ import {
   readRuntimeLoadState,
   readManagedProviderFile,
   saveConfigFile,
-  saveManagedProviderFile,
-  validateManagedProviderFile,
+  saveCollectionWorkspace,
+  validateCollectionWorkspace,
   type ConfigSnapshot,
   type ManagedProviderFile,
   type ManagedHttpProviderOwner,
@@ -37,39 +35,34 @@ import { applyRuntimeConfig, RuntimeApplyError, runtimeSourceIdentity, confirmed
 import type { Notify } from "@/shared/types"
 import { collectionSourceMatches, type CollectionSource } from "@/shared/collectionTarget"
 import { restoreCollectionPath } from "@/shared/collectionPath"
+import { cleanupSummary } from "@/shared/collectionCleanup"
 import type { ProviderCategory } from "./collectionViewModel"
-import { createCollectionDraft } from "./proxyCollectionImport"
+import { createCollectionDraft, readUploadDeclaration } from "./proxyCollectionImport"
+import { assertCollectionPathAvailable, collectionFileName, patchCollectionIdentity, stageCollectionSettings, suggestedCollectionFileName } from "./collectionNaming"
 import {
   managedConfigIdentity,
   managedHttpOwnerChangeIds,
   managedProviderFileHasDraft,
-  managedProviderFileSaveTargets,
+  managedCollectionBodyDrafts,
   managedProviderRuntimePaired,
   updateInlineDraftState,
   externalManagedConfigDecision,
   managedPendingChangeIds,
   managedProviderDraftIssue,
-  managedProviderApplyTargets,
   managedProviderDiscardState,
   managedProviderRowOperationPending,
-  managedRuleProviderUnloadConflictMessage,
-  managedRuleProviderUnloadConflicts,
   managementBaselineKey,
   managementBaselineResourcesChanged,
   managementLifecycleState,
   managementLifecycleView,
   reduceManagementLifecycle,
-  managedProviderConfigSaveKind,
-  managedProviderSavedContents,
   reconcileManagedProviderDraft,
   reconcileManagedProviderTextEdit,
   resolveManagedProviderBaseline,
   type ManagementBaseline,
 } from "./managedProviderState"
 import {
-  desiredManagedHttpOwners,
   managedProviderControlsForItem as controlsFor,
-  managedProviderItems,
   managedProviderContentKey,
   managedProviderModificationReason,
   managedCollectionItems,
@@ -77,9 +70,8 @@ import {
   type ManagedProviderItem,
   type ManagedProviderControls,
 } from "./managedProviderModel"
-import { deleteManagedProviderConfig, replaceProviderDraftText, replaceProviderDrafts, inlineProviderDraftText, updateHttpProviderContent } from "./managedProviderYaml"
+import { replaceCollectionUploadDeclaration, deleteManagedProviderConfig, replaceProviderDraftText, replaceProviderDrafts, inlineProviderDraftText, updateHttpProviderContent } from "./managedProviderYaml"
 import {
-  updateAndReadCollectionProviderStatuses,
   updateCollectionProvider,
   type ManagedProviderApplyResult,
   type ManagedProviderRemovalResult,
@@ -170,6 +162,7 @@ export function useManagedProviderWorkspace(
   const [contentErrors, setContentErrors] = useState<Record<string, string | null>>({})
   const [readErrors, setReadErrors] = useState<Record<string, string | null>>({})
   const [configContentError, setConfigContentError] = useState<string | null>(null)
+  const [applyError, setApplyError] = useState<string | null>(null)
   const [declarationDrafts, setDeclarationDrafts] = useState<Record<string, string>>({})
   const [declarationErrors, setDeclarationErrors] = useState<Record<string, string | null>>({})
   const [activeIds, setActiveIds] = useState<Partial<Record<ProviderCategory, string>>>(() =>
@@ -179,6 +172,7 @@ export function useManagedProviderWorkspace(
   const [busy, setBusy] = useState(false)
   const [runtimeSourceName, setRuntimeSourceName] = useState<string | null>(null)
   const [runtimeSource, setRuntimeSource] = useState<CollectionSource | null>(null)
+  const [pendingRemovals, setPendingRemovals] = useState<Array<{ category: ProviderCategory; name: string }>>([])
   const [savedPending, setSavedPending] = useState(initialSession?.savedPending ?? false)
   const busyRef = useRef(busy)
   busyRef.current = busy
@@ -210,6 +204,7 @@ export function useManagedProviderWorkspace(
     }
   }, [options.source, options.invalidSource, identityStatus, managementBaseline, runtimeSourceName, activeIds, savedContents, preferences, savedPending])
 
+  const readOnlyForItem = (item: ManagedProviderItem) => preferences.readOnly.includes(JSON.stringify([snapshot?.name, item.category, item.name]))
   const itemReader = managedCollectionItems
   const itemsByCategory = useMemo(() => {
     const itemsFor = (providerCategory: ProviderCategory) => {
@@ -316,6 +311,7 @@ export function useManagedProviderWorkspace(
     setDeclarationDrafts(reset.declarationDrafts)
     setDeclarationErrors(reset.declarationErrors)
     setConfigContentError(reset.configContentError)
+    setPendingRemovals([])
     return true
   }, [baselineControls, busy, files, savedHttpOwners, snapshot])
 
@@ -480,38 +476,6 @@ export function useManagedProviderWorkspace(
     return true
   }, [refresh, snapshot?.name])
 
-  const adoptDiskBaselineAfterControllerFailure = useCallback(async (
-    nextSnapshot: ConfigSnapshot,
-    failureMessage: string,
-    sourceConfirmed = false,
-  ) => {
-    const baseline = await resolveManagedProviderBaseline(
-      nextSnapshot,
-      files,
-      httpOwners,
-      () => listManagedProviderFiles(),
-      () => listManagedHttpProviders(nextSnapshot.name),
-      itemReader,
-    )
-    dispatchManagementLifecycle(sourceConfirmed
-      ? { type: "own-commit", baseline }
-      : { type: "disk-diverged", baseline, message: failureMessage })
-    setHttpOwners(baseline.httpOwners)
-    configContentRef.current = nextSnapshot.content
-    lastValidConfigContentRef.current = nextSnapshot.content
-    setConfigContent(nextSnapshot.content)
-    setLastValidConfigContent(nextSnapshot.content)
-    setConfigContentError(null)
-    setControls(baseline.controls)
-    contentsRef.current = {}
-    contentErrorsRef.current = {}
-    setContents({})
-    setSavedContents({})
-    setContentErrors({})
-    setDeclarationDrafts({})
-    setDeclarationErrors({})
-  }, [files, httpOwners, itemReader])
-
   useEffect(() => {
     const activeRequests = new LatestRequestController()
     contentRequests.current = new LatestRequestController()
@@ -615,38 +579,19 @@ export function useManagedProviderWorkspace(
     }
   }, [itemReader, reconcileFileCommit, snapshot])
 
-  const importCollections = useCallback(async (inputs: ProxyCollectionInput[], onSaved: (id: string, config: ConfigSnapshot) => void,
-    expectedSource?: Pick<ConfigSnapshot, "name" | "sha256">, onError?: (id: string, message: string) => void) => {
-    if (!snapshot || busyRef.current || dirtyRef.current || writeDisabled) return false
-    busyRef.current = true
-    setBusy(true)
-    let current = expectedSource ?? snapshot
-    let pendingId = inputs[0]?.operationId
-    try {
-      await verifySource()
-      for (const input of inputs) {
-        pendingId = input.operationId
-        const category = input.category ?? "proxy"
-        const result = await createManagedCollection({ ...input, category, configName: current.name, expectedConfigSha256: current.sha256 })
-        current = result.config
-        acceptSourceCommit(result.config, { category, name: result.name })
-        onSaved(input.operationId, result.config)
-        setActiveIds((ids) => ({ ...ids, [category]: `${category}:declaration:${result.name}` }))
-        setSavedPending(true)
-      }
-      await refresh(true)
-      notify("集合文件和主配置引用已保存，等待应用")
-      return true
-    } catch (error) {
-      if (pendingId) onError?.(pendingId, providerError(error))
-      notify(`${providerError(error)}；已保留输入，可重试未完成项`, "error")
-      await refresh(true)
-      return false
-    } finally {
-      busyRef.current = false
-      setBusy(false)
-    }
-  }, [acceptSourceCommit, notify, refresh, snapshot, verifySource, writeDisabled])
+  const contentReadError = active ? readErrors[managedProviderContentKey(active)] ?? null : null
+  const contentRetryBlockedReason = !active || !contentReadError ? "当前没有需要重试的读取"
+    : busy || identityStatus !== "ready" ? "请等待当前操作完成并确认集合来源"
+    : options.inputDirty ? "请先保存或取消集合输入，再重试读取"
+    : fileHasDraftRef.current(active) ? "请先保存或放弃当前集合草稿，再重试读取"
+    : active.fileIssue || active.access === "inline" ? "请先处理当前集合的文件状态"
+    : contents[managedProviderContentKey(active)] !== undefined && !(active.fileName ?? active.referencePath?.split(/[\/]/).pop())
+      ? "当前集合没有可重新读取的文件" : null
+  const retryContent = useCallback(async () => {
+    if (!active || contentRetryBlockedReason || busyRef.current || inputDirtyRef.current || fileHasDraftRef.current(active)) return
+    if (contentsRef.current[managedProviderContentKey(active)] !== undefined) await refreshItem(active)
+    else await select(active)
+  }, [active, contentRetryBlockedReason, refreshItem, select])
 
   const editConfigContent = useCallback((value: string) => {
     if (!snapshot) {
@@ -712,229 +657,216 @@ export function useManagedProviderWorkspace(
       }
       return
     }
-    contentsRef.current = { ...contentsRef.current, [managedProviderContentKey(item)]: value }
+    const key = managedProviderContentKey(item)
+    contentsRef.current = { ...contentsRef.current, [key]: value }
+    contentErrorsRef.current = { ...contentErrorsRef.current, [key]: parseDocument(value).errors.length ? "集合 YAML 格式错误；可保存草稿，修正后应用" : null }
     setContents(contentsRef.current)
+    setContentErrors(contentErrorsRef.current)
   }, [writeDisabled])
 
 
-  const createDeclaredCollection = useCallback((input: ProxyCollectionInput, type: "inline" | "file" | "http", url: string, collectionCategory: ProviderCategory = category) => {
-    if (!snapshot || writeDisabled || busyRef.current || dirtyRef.current) return false
+  const uploadContent = useCallback(async (item: ManagedProviderItem, file: File) => {
+    if (busyRef.current || writeDisabled || !item.writable) return false
+    if (!/\.ya?ml$/i.test(file.name)) { notify("请选择 YAML 文件", "error"); return false }
+    const request = contentRequests.current.begin()
+    busyRef.current = true; setBusy(true)
     try {
-      const created = createCollectionDraft(configContentRef.current, input, type, url, collectionCategory, input.targetFileName)
+      const content = await file.text()
+      if (!request.isCurrent()) return false
+      editContent(item, content)
+      return true
+    } catch { if (request.isCurrent()) notify("文件读取失败，草稿已保留", "error"); return false }
+    finally { busyRef.current = false; if (request.finish()) setBusy(false) }
+  }, [editContent, notify, writeDisabled])
+
+  const useExistingContent = useCallback(async (item: ManagedProviderItem, fileName: string) => {
+    if (busyRef.current || writeDisabled || !item.writable || !["manual", "external"].includes(item.access)) return false
+    const file = files.find(entry => entry.category === item.category && entry.fileName === fileName && entry.writable && ["manual", "external"].includes(entry.source))
+    if (!file) { notify("所选集合文件已变化，请重新读取", "error"); return false }
+    const request = contentRequests.current.begin()
+    busyRef.current = true; setBusy(true)
+    try {
+      const result = await readManagedProviderFile(item.category, fileName, request.signal)
+      if (!request.isCurrent()) return false
+      if (!result.writable || !["manual", "external"].includes(result.source) || result.sha256 !== file.sha256) throw new Error("所选集合文件已变化，请重新读取")
+      editContent(item, result.content)
+      return true
+    } catch (error) { if (request.isCurrent()) notify(providerError(error), "error"); return false }
+    finally { busyRef.current = false; if (request.finish()) setBusy(false) }
+  }, [editContent, files, notify, writeDisabled])
+
+  const createDeclaredCollection = useCallback(async (input: ProxyCollectionInput, type: "inline" | "file" | "http", url: string, collectionCategory: ProviderCategory = category, fileName = suggestedCollectionFileName(input.name)) => {
+    if (!snapshot || writeDisabled || busyRef.current) return false
+    busyRef.current = true; setBusy(true)
+    try {
+      let body = input.content || (collectionCategory === "proxy" ? "proxies: []\n" : "payload: []\n")
+      if (type === "file" && input.targetFileName) {
+        const file = files.find((entry) => entry.category === collectionCategory && entry.referencePath === input.targetFileName && entry.writable)
+        if (!file) throw new Error("所选集合文件已变化，请重新选择")
+        body = (await readManagedProviderFile(collectionCategory, file.fileName)).content
+      }
+      const path = type === "file" ? "./" + collectionFileName(fileName) : undefined
+      if (path) assertCollectionPathAvailable(configContentRef.current, collectionCategory, path)
+      const created = createCollectionDraft(configContentRef.current, input, type, url, collectionCategory, path)
       editConfigContent(created.content)
+      if (type === "file") {
+        contentsRef.current = { ...contentsRef.current, [collectionCategory + ":declaration:" + created.name]: body }
+        setContents(contentsRef.current)
+      }
       if (type === "http") setHttpOwners((current) => [...current, { configName: snapshot.name, category: collectionCategory, name: created.name, declaration: created.declaration }])
       setActiveIds((current) => ({ ...current, [collectionCategory]: `${collectionCategory}:declaration:${created.name}` }))
       if (explicitSource.current) onSourceChange.current?.(explicitSource.current, { category: collectionCategory, name: created.name })
-      notify("集合已加入草稿，请保存配置后应用")
+      notify("集合已加入草稿，可保存或直接应用配置")
       return true
     } catch (error) { notify(providerError(error), "error"); return false }
-  }, [category, editConfigContent, notify, snapshot, writeDisabled])
+    finally { busyRef.current = false; setBusy(false) }
+  }, [category, editConfigContent, files, notify, snapshot, writeDisabled])
 
+
+  const importCollections = useCallback(async (inputs: ProxyCollectionInput[], onSaved: (id: string, config: ConfigSnapshot) => void,
+    expectedSource?: Pick<ConfigSnapshot, "name" | "sha256">, onError?: (id: string, message: string) => void) => {
+    if (!snapshot || busyRef.current || writeDisabled) return false
+    if (expectedSource && !collectionSourceMatches(snapshot, expectedSource)) { notify("配置版本已变化，上传草稿已保留", "error"); return false }
+    let content = configContentRef.current
+    const staged = { ...contentsRef.current }
+    const uploadedBodies: Array<{ category: ProviderCategory; name: string; content: string }> = []
+    const removedNames: Array<{ category: ProviderCategory; name: string }> = []
+    let last: { category: ProviderCategory; name: string } | null = null
+    busyRef.current = true; setBusy(true)
+    try {
+      for (const input of inputs) {
+        const kind = input.category ?? "proxy"
+        const existing = itemsByCategory[kind].find((item) => item.name === input.name)
+        if (existing) {
+          if (!existing.writable || existing.declaration?.type !== "file" || readOnlyForItem(existing)) throw new Error("目标集合正文只读")
+          const declaration = input.snippet ? readUploadDeclaration(input.snippet, kind) : { name: existing.name, declaration: existing.declaration! }
+          content = replaceCollectionUploadDeclaration(content, existing, declaration.name, declaration.declaration)
+          if (declaration.name !== existing.name) removedNames.push({ category: kind, name: existing.name })
+          uploadedBodies.push({ category: kind, name: declaration.name, content: input.content })
+          last = { category: kind, name: declaration.name }
+        } else {
+          const declaration = input.snippet ? readUploadDeclaration(input.snippet, kind) : null
+          const created = createCollectionDraft(content, { ...input, name: declaration?.name ?? input.name }, "file", "", kind,
+            String(declaration?.declaration.path ?? "./" + input.name + ".yaml"), declaration?.declaration)
+          content = created.content
+          uploadedBodies.push({ category: kind, name: created.name, content: input.content })
+          last = { category: kind, name: created.name }
+        }
+      }
+      const nextItems = [...itemReader({ ...snapshot, content }, files, "proxy", httpOwners), ...itemReader({ ...snapshot, content }, files, "rule", httpOwners)]
+      for (const body of uploadedBodies) {
+        const item = nextItems.find((entry) => entry.category === body.category && entry.name === body.name)
+        if (!item || !item.writable) throw new Error("上传目标正文不可写")
+        staged[managedProviderContentKey(item)] = body.content
+      }
+      await validateCollectionWorkspace(snapshot.name, { content, expectedSha256: snapshot.sha256, bodies: [], removals: [] })
+      editConfigContent(content)
+      setPendingRemovals((current) => [...current, ...removedNames])
+      contentsRef.current = staged
+      setContents(staged)
+      if (last) {
+        const selected = last
+        setActiveIds((current) => ({ ...current, [selected.category]: selected.name }))
+        if (explicitSource.current) onSourceChange.current?.(explicitSource.current, last)
+      }
+      for (const input of inputs) onSaved(input.operationId, snapshot)
+      notify("上传内容已加入集合草稿，可保存或直接应用整份配置")
+      return true
+    } catch (error) {
+      const message = providerError(error)
+      for (const input of inputs) onError?.(input.operationId, message)
+      notify(message, "error"); return false
+    }
+    finally { busyRef.current = false; setBusy(false) }
+  }, [editConfigContent, files, httpOwners, itemReader, itemsByCategory, notify, preferences.readOnly, snapshot, writeDisabled])
+
+  const validate = useCallback(async () => {
+    if (!snapshot || busyRef.current || writeDisabled) return false
+    const bodies = [...itemsByCategory.proxy, ...itemsByCategory.rule].filter((item) => !item.pendingRemoval && contentsRef.current[managedProviderContentKey(item)] !== undefined)
+      .map((item) => ({ category: item.category, name: item.name, content: contentsRef.current[managedProviderContentKey(item)]!, expectedSha256: item.sha256 }))
+    busyRef.current = true; setBusy(true)
+    try {
+      await validateCollectionWorkspace(snapshot.name, { content: configContentRef.current, expectedSha256: snapshot.sha256, bodies, removals: [] })
+      notify("YAML 校验通过"); return true
+    } catch (error) { notify(providerError(error), "error"); return false }
+    finally { busyRef.current = false; setBusy(false) }
+  }, [itemsByCategory, notify, snapshot, writeDisabled])
 
   const apply = useCallback(async (saveOnly = false) => {
-    if (!snapshot || !canApply || busy || writeDisabled) return false
-    const currentContent = configContentRef.current
+    if (!snapshot || !canApply || busyRef.current || writeDisabled) return false
+    setApplyError(null)
     const currentContents = { ...contentsRef.current }
-    const currentContentErrors = contentErrorsRef.current
-    const allItems = [...itemsByCategory.proxy, ...itemsByCategory.rule]
-    const changedContentKeys = new Set(allItems.filter((item) => {
-      const key = managedProviderContentKey(item)
-      return currentContents[key] !== undefined && currentContents[key] !== (savedContents[key] ?? item.content)
-    }).map(managedProviderContentKey))
-    if (!saveOnly && (configContentError || draftIssue || Object.values(contentErrors).some(Boolean) || dirtyRef.current)) return false
-    const unloadConflictMessage = managedRuleProviderUnloadConflictMessage(
-      managedRuleProviderUnloadConflicts(controls, baselineControls, itemsByCategory.rule),
-    )
-    if (!saveOnly && unloadConflictMessage) {
-      configContentRef.current = snapshot.content
-      lastValidConfigContentRef.current = snapshot.content
-      setConfigContent(snapshot.content)
-      setLastValidConfigContent(snapshot.content)
-      setHttpOwners(savedHttpOwners)
-      setControls(baselineControls)
-      setDeclarationDrafts({})
-      setDeclarationErrors({})
-      setConfigContentError(unloadConflictMessage)
-      return false
+    const allItems = [...itemsByCategory.proxy, ...itemsByCategory.rule].filter((item) => !item.pendingRemoval &&
+      !pendingRemovals.some((removed) => removed.category === item.category && removed.name === item.name))
+    let sourceContent = configContentRef.current
+    const fragments: Array<{ item: ManagedProviderItem; snippet: string }> = []
+    for (const item of allItems) {
+      if (item.access === "inline" && contentErrorsRef.current[item.id]) fragments.push({ item, snippet: inlineProviderDraftText(item, currentContents[item.id] ?? item.content) })
+      if (declarationErrors[item.id] && declarationDrafts[item.id] !== undefined) fragments.push({ item, snippet: declarationDrafts[item.id]! })
     }
+    if (fragments.length) sourceContent = replaceProviderDrafts(lastValidConfigContentRef.current, fragments)
+    const bodies = managedCollectionBodyDrafts(allItems, currentContents, savedContents, pendingRemovals)
     busyRef.current = true
     setBusy(true)
-    let filesSaved = false
-    const savedFiles: ManagedProviderFileSnapshot[] = []
+    let savedConfig: ConfigSnapshot | null = null
     try {
       await verifySource()
-      const fresh = await readConfigFile(snapshot.name)
-      if (fresh.sha256 !== snapshot.sha256) throw new ConfigError("configuration changed", 409, "config_conflict")
-      for (const item of managedProviderFileSaveTargets(allItems, changedContentKeys)) {
-        if (!item.writable || item.access === "http" || !item.fileName || !item.sha256) throw new Error("集合正文不可写，未应用配置")
-        const content = currentContents[managedProviderContentKey(item)] ?? item.content
-        if (!saveOnly) await validateManagedProviderFile(item.category, item.fileName, content)
-        const saved = await saveManagedProviderFile(item.category, item.fileName, content, item.sha256)
-        savedFiles.push(saved)
-        reconcileFileCommit(saved)
-        filesSaved = true
-        setSavedPending(true)
-      }
-      if (saveOnly) {
-        let sourceContent = parseDocument(currentContent).errors.length ? lastValidConfigContentRef.current : currentContent
-        const fragments: Array<{ item: ManagedProviderItem; snippet: string }> = []
-        for (const item of allItems) {
-          if (item.access === "inline" && currentContentErrors[item.id]) {
-            fragments.push({ item, snippet: inlineProviderDraftText(item, currentContents[item.id] ?? item.content) })
-          }
-          if (declarationErrors[item.id] && declarationDrafts[item.id] !== undefined) {
-            fragments.push({ item, snippet: declarationDrafts[item.id]! })
-          }
-        }
-        if (fragments.length) sourceContent = replaceProviderDrafts(sourceContent, fragments)
-        // A direct main-editor draft is already the complete source payload.
-        if (configContentError && !Object.values(currentContentErrors).some(Boolean) && !Object.values(declarationErrors).some(Boolean)) sourceContent = currentContent
-        const saved = sourceContent === fresh.content ? fresh : await saveConfigFile(snapshot.name, sourceContent, fresh.sha256)
-        acceptSourceCommit(saved)
-        const nextFiles = files.map((file) => savedFiles.find((body) => body.category === file.category && body.fileName === file.fileName) ?? file)
-        const baseline = { snapshot: saved, files: nextFiles, httpOwners, controls }
-        dispatchManagementLifecycle({ type: "own-commit", baseline })
-        configContentRef.current = saved.content
-        setConfigContent(saved.content)
-        setConfigContentError(parseDocument(saved.content).errors.length
-          ? "配置草稿已保存，YAML 尚未完成；集合列表沿用最近可解析声明，请修正正文或在配置中心继续编辑"
-          : null)
-        setSavedContents(currentContents)
-        setDeclarationDrafts({})
-        setSavedPending(true)
-        notify("配置已保存，待应用")
-        return false
-      }
-      const draftItems = [
-        ...managedProviderItems({ ...snapshot, content: configContent }, files, "proxy", httpOwners),
-        ...managedProviderItems({ ...snapshot, content: configContent }, files, "rule", httpOwners),
-      ]
-      const baselineItems = [
-        ...managedProviderItems(snapshot, files, "proxy", savedHttpOwners),
-        ...managedProviderItems(snapshot, files, "rule", savedHttpOwners),
-      ]
-      const desiredHttpOwners = desiredManagedHttpOwners(draftItems)
-      const applyTargets = managedProviderApplyTargets(
-        category,
-        draftItems,
-        baselineItems,
-        controls,
-        baselineControls,
-      )
-      const configSaveKind = managedProviderConfigSaveKind({
-        snapshot, fresh, content: configContent,
-        changedItems: [...itemsByCategory.proxy, ...itemsByCategory.rule].filter((item) => contentDirtyIds.has(item.id)),
-        currentOwners: httpOwners, savedOwners: savedHttpOwners, desiredOwners: desiredHttpOwners,
-      })
-      const savedConfig = configSaveKind === "reuse" ? fresh : configSaveKind === "catalog"
-        ? await applyManagedHttpProviders({
-            configName: snapshot.name,
-            content: configContent,
-            expectedSha256: fresh.sha256,
-            providers: desiredHttpOwners,
-          })
-        : await saveConfigFile(snapshot.name, configContent, fresh.sha256)
+      savedConfig = await saveCollectionWorkspace(snapshot.name, { content: sourceContent, expectedSha256: snapshot.sha256, bodies, removals: pendingRemovals, httpProviders: httpOwners.filter((owner) => owner.writable !== false).map(({ category, name }) => ({ category, name })) })
       acceptSourceCommit(savedConfig)
+      setPendingRemovals([])
       setSavedPending(true)
-      try {
-        await applyRuntimeConfig(savedConfig)
-        setSavedPending(false)
-        setRuntimeSourceName(savedConfig.name)
-        setRuntimeSource({ name: savedConfig.name, sha256: savedConfig.sha256 })
-      } catch (error) {
-        const failureMessage = error instanceof RuntimeApplyError
-          ? error.message
-          : "磁盘配置已保存，但运行配置应用失败；运行身份未知"
-        const sourceConfirmed = error instanceof RuntimeApplyError && error.phase === "prepare" &&
-          confirmedRuntimeSource(await readRuntimeLoadState().catch(() => null))?.name === savedConfig.name
-        await adoptDiskBaselineAfterControllerFailure(savedConfig, failureMessage, sourceConfirmed)
-        notify(failureMessage, "error")
-        return false
-      }
-      const nextBaseline = await resolveManagedProviderBaseline(
-        savedConfig,
-        files.map((file) => savedFiles.find((saved) => saved.category === file.category && saved.fileName === file.fileName) ?? file),
-        httpOwners,
-        () => listManagedProviderFiles(),
-        () => listManagedHttpProviders(savedConfig.name),
-        itemReader,
-      )
-      const runtimeTargets = applyTargets.filter((item) => item.access === "http")
-      let runtimeProviders: Record<string, Record<string, unknown>> = {}
-      let runtimeFailures = 0
-      let retainedVersions = 0
-      let verificationFailed = false
-      let unverifiedUpdateFailures = 0
-      if (runtimeTargets.length > 0) {
-        const runtimeResult = await updateAndReadCollectionProviderStatuses(
-          category,
-          runtimeTargets.map((item) => item.name),
-          new AbortController().signal,
-        )
-        verificationFailed = runtimeResult.verificationFailed
-        unverifiedUpdateFailures = runtimeResult.verificationFailed ? runtimeResult.updateFailedNames.size : 0
-        if (!runtimeResult.verificationFailed) {
-          runtimeProviders = Object.fromEntries(runtimeTargets
-            .map((item) => [item.name, runtimeResult.providers[item.name]] as const)
-            .filter(([, provider]) => provider !== undefined))
-          runtimeFailures = Object.values(runtimeResult.statuses).filter((status) => status === "failed").length
-          retainedVersions = Object.values(runtimeResult.statuses).filter((status) => status === "update-failed").length
-        }
-      }
-      const key = managementBaselineKey(true, savedConfig.name, savedConfig.sha256)
-      if (key) managementBaselineCache.set(key, nextBaseline)
+      const nextFiles = await listManagedProviderFiles()
+      const validSource = !parseDocument(savedConfig.content).errors.length
+      const nextBaseline = validSource
+        ? { snapshot: savedConfig, files: nextFiles, ...reconcileManagedProviderDraft(savedConfig, nextFiles, httpOwners, itemReader) }
+        : { snapshot: savedConfig, files: nextFiles, httpOwners, controls }
       dispatchManagementLifecycle({ type: "own-commit", baseline: nextBaseline })
+      managementBaselineRef.current = nextBaseline
       setHttpOwners(nextBaseline.httpOwners)
-      configContentRef.current = savedConfig.content
-      lastValidConfigContentRef.current = savedConfig.content
-      setConfigContent(savedConfig.content)
-      setLastValidConfigContent(savedConfig.content)
-      setConfigContentError(null)
       setControls(nextBaseline.controls)
-      const savedBodies = managedProviderSavedContents([
-        ...itemReader(savedConfig, nextBaseline.files, "proxy", nextBaseline.httpOwners),
-        ...itemReader(savedConfig, nextBaseline.files, "rule", nextBaseline.httpOwners),
-      ], savedFiles)
+      configContentRef.current = savedConfig.content
+      setConfigContent(savedConfig.content)
+      if (validSource) {
+        lastValidConfigContentRef.current = savedConfig.content
+        setLastValidConfigContent(savedConfig.content)
+      }
+      setConfigContentError(validSource ? null : "配置草稿已保存，YAML 尚未完成；请修正后应用")
+      const savedBodies: Record<string, string> = {}
+      if (validSource) {
+        const nextItems = [...itemReader(savedConfig, nextFiles, "proxy", httpOwners), ...itemReader(savedConfig, nextFiles, "rule", httpOwners)]
+        for (const item of nextItems) {
+          const old = allItems.find((candidate) => candidate.category === item.category && candidate.name === item.name)
+          const body = old && currentContents[managedProviderContentKey(old)]
+          if (body !== undefined) savedBodies[managedProviderContentKey(item)] = body
+        }
+      } else Object.assign(savedBodies, currentContents)
       contentsRef.current = savedBodies
-      contentErrorsRef.current = {}
       setContents(savedBodies)
       setSavedContents(savedBodies)
-      setContentErrors({})
+      const savedErrors = Object.fromEntries(Object.entries(savedBodies).map(([key, body]) => [key, parseDocument(body).errors.length ? "集合 YAML 格式错误；草稿已保存，修正后应用" : null]))
+      contentErrorsRef.current = savedErrors
+      setContentErrors(savedErrors)
       setDeclarationDrafts({})
       setDeclarationErrors({})
-
-      const localIssues = [
-        ...(savedConfig.providerRefreshFailed ? ["关联代理 Provider 提取更新失败，继续使用现有版本"] : []),
-        ...(retainedVersions > 0 ? [`${retainedVersions} 项更新失败，继续使用现有版本`] : []),
-        ...(runtimeFailures > 0 ? [`${runtimeFailures} 项暂无可用内容`] : []),
-        ...(unverifiedUpdateFailures > 0 ? [`${unverifiedUpdateFailures} 项更新请求失败且运行态无法核对`] : []),
-        ...(verificationFailed ? ["Controller 运行态核对失败，目标状态尚未确认"] : []),
-      ]
-      notify(localIssues.length > 0
-        ? `配置已应用；${localIssues.join("；")}`
-        : "配置已应用并刷新", localIssues.length > 0 ? "error" : "ok")
-      const currentById = new Map(draftItems.map((item) => [item.id, item]))
-      const removedNames = baselineItems
-        .filter((item) => item.category === category && item.declared && !currentById.get(item.id)?.declared)
-        .map((item) => item.name)
-      return {
-        snapshot: { name: savedConfig.name, sha256: savedConfig.sha256 },
-        category,
-        runtimeProviders,
-        removedNames,
-      } satisfies ManagedProviderApplyResult
+      if (saveOnly) { notify("配置及集合草稿已保存，待应用"); return true }
+      const applied = await applyRuntimeConfig(savedConfig)
+      setSavedPending(false)
+      setRuntimeSourceName(savedConfig.name)
+      setRuntimeSource({ name: savedConfig.name, sha256: savedConfig.sha256 })
+      await refresh(true)
+      notify("配置及集合已应用" + (applied.collectionCleanup?.length ? "；" + cleanupSummary({ files: applied.collectionCleanup }) : ""))
+      return { snapshot: { name: savedConfig.name, sha256: savedConfig.sha256 }, category, runtimeProviders: {}, removedNames: pendingRemovals.filter((item) => item.category === category).map((item) => item.name) } satisfies ManagedProviderApplyResult
     } catch (error) {
-      const message = `${filesSaved ? "部分集合文件已保存；" : ""}${providerError(error)}；操作未完成`
-      notify(message, "error")
+      const failure = error instanceof RuntimeApplyError ? error.message
+        : savedConfig ? "磁盘配置及集合已保存，应用未完成；" + providerError(error) : providerError(error)
+      setApplyError(failure)
+      notify(failure, "error")
       return false
-    } finally {
-      busyRef.current = false
-      setBusy(false)
-    }
-  }, [adoptDiskBaselineAfterControllerFailure, baselineControls, busy, canApply, category, changedHttpOwnerIds, configContent, configContentError, configDirty, contentDirtyIds, contentErrors, controls, declarationDrafts, declarationErrors, draftIssue, files, httpOwners, itemReader, itemsByCategory, notify, reconcileFileCommit, savedContents, savedHttpOwners, snapshot, verifySource, writeDisabled])
+    } finally { busyRef.current = false; setBusy(false) }
+  }, [acceptSourceCommit, canApply, category, controls, declarationDrafts, declarationErrors, httpOwners, itemReader, itemsByCategory, notify, pendingRemovals, refresh, savedContents, savedHttpOwners, snapshot, verifySource, writeDisabled])
 
   const remove = useCallback(async (target: ManagedProviderItem | null = active) => {
-    if (!target || busyRef.current || inputDirtyRef.current || dirtyRef.current || itemOperationPending(target) || writeDisabled) return false
+    if (!target || busyRef.current || inputDirtyRef.current || writeDisabled) return false
     const ownedSource = target.access === "local" || target.access === "subscription"
     const reason = managedProviderModificationReason(target)
     if (reason) { notify(reason, "error"); return false }
@@ -942,14 +874,16 @@ export function useManagedProviderWorkspace(
     setBusy(true)
     try {
       await verifySource()
-      if (target.access === "http" || target.access === "inline") {
+      if (target.access === "http" || target.access === "inline" || (target.declared && (target.access === "manual" || target.access === "external"))) {
         const candidate = deleteManagedProviderConfig(configContentRef.current, target)
         editConfigContent(candidate)
+        setPendingRemovals((current) => [...current.filter((item) => item.category !== target.category || item.name !== target.name), { category: target.category, name: target.name }])
         setHttpOwners((current) => current.filter((owner) => owner.category !== target.category || owner.name !== target.name))
         notify("集合已从配置草稿移除，请保存并应用")
         return { applied: null } satisfies ManagedProviderRemovalResult
       }
       if (ownedSource) {
+        if (dirtyRef.current) throw new Error("请先保存当前配置草稿，再删除自动提取关系")
         if (!snapshot || !target.fileName || !target.sha256 || !target.ownerId) return false
         const source = target.access as "local" | "subscription"
         const candidate = target.declared
@@ -1004,7 +938,7 @@ export function useManagedProviderWorkspace(
       busyRef.current = false
       setBusy(false)
     }
-  }, [active, adoptDiskBaselineAfterControllerFailure, editConfigContent, itemOperationPending, notify, refresh, snapshot, verifySource, writeDisabled])
+  }, [active, editConfigContent, itemOperationPending, notify, refresh, snapshot, verifySource, writeDisabled])
 
   const setReadOnly = useCallback(async (item: ManagedProviderItem, readOnly: boolean) => {
     if (!snapshot || writeDisabled) return
@@ -1017,18 +951,53 @@ export function useManagedProviderWorkspace(
     finally { setBusy(false) }
   }, [notify, preferences.version, snapshot, verifySource, writeDisabled])
 
-  const saveSettings = useCallback(async (item: ManagedProviderItem, source: Pick<ConfigSnapshot, "name" | "sha256">, draft: { snippet: string; loaded: boolean; selectedGroups: string[] }) => {
-    if (!snapshot || writeDisabled || dirtyRef.current || busyRef.current) return false
-    busyRef.current = true
-    setBusy(true)
+  const saveSettings = useCallback(async (item: ManagedProviderItem, source: Pick<ConfigSnapshot, "name" | "sha256">, draft: { snippet: string; loaded: boolean; selectedGroups: string[] }, onSourceSaved?: (source: Pick<ConfigSnapshot, "name" | "sha256">) => void) => {
+    if (!snapshot || writeDisabled || busyRef.current) return false
+    let savedDrafts = false
+    busyRef.current = true; setBusy(true)
     try {
       if (!managedConfigIdentity(snapshot, source.name, source.sha256)) throw new ConfigError("configuration changed", 409, "config_conflict")
       await verifySource()
+      if (item.declaration?.type === "file" && item.writable && ["manual", "external"].includes(item.access) && item.fileIssue === "missing" && !item.sha256) {
+        const staged = stageCollectionSettings(configContentRef.current, item, draft)
+        const next = itemReader({ ...snapshot, content: staged.content }, files, item.category, httpOwners).find((entry) => entry.name === staged.name && entry.declared)
+        if (next?.sha256) throw new Error("该文件名已存在，请更换文件名")
+        const oldKey = managedProviderContentKey(item)
+        const nextContents = { ...contentsRef.current }
+        const nextErrors = { ...contentErrorsRef.current }
+        if (next && nextContents[oldKey] !== undefined) {
+          const key = managedProviderContentKey(next)
+          const body = nextContents[oldKey]!
+          const error = nextErrors[oldKey] ?? null
+          delete nextContents[oldKey]; delete nextErrors[oldKey]
+          nextContents[key] = body; nextErrors[key] = error
+        } else if (!draft.loaded) { delete nextContents[oldKey]; delete nextErrors[oldKey] }
+        editConfigContent(staged.content)
+        contentsRef.current = nextContents; setContents(nextContents)
+        contentErrorsRef.current = nextErrors; setContentErrors(nextErrors)
+        setActiveIds((current) => ({ ...current, [item.category]: staged.name }))
+        if (explicitSource.current && next) onSourceChange.current?.(explicitSource.current, { category: item.category, name: staged.name })
+        notify("集合设置已加入草稿，正文已保留")
+        return true
+      }
+      if (dirtyRef.current) {
+        busyRef.current = false
+        if (!await apply(true)) return false
+        savedDrafts = true
+        onSourceSaved?.(managementBaselineRef.current!.snapshot)
+      }
+      busyRef.current = true; setBusy(true)
+      const baseline = managementBaselineRef.current!
+      const currentSource = baseline.snapshot
+      const fresh = await readConfigFile(currentSource.name)
+      if (!collectionSourceMatches(fresh, currentSource)) throw new ConfigError("configuration changed", 409, "config_conflict")
+      const currentItem = itemReader(currentSource, baseline.files, item.category, baseline.httpOwners).find((entry) => entry.name === item.name)
+      if (!currentItem) throw new Error("集合已变化，输入已保留，请重新打开设置")
       if (parseDocument(draft.snippet).errors.length) {
-        const content = replaceProviderDraftText(snapshot.content, item, draft.snippet)
-        const saved = await saveConfigFile(source.name, content, source.sha256)
+        const content = replaceProviderDraftText(currentSource.content, currentItem, draft.snippet)
+        const saved = await saveConfigFile(currentSource.name, content, currentSource.sha256)
         acceptSourceCommit(saved)
-        dispatchManagementLifecycle({ type: "own-commit", baseline: { snapshot: saved, files, httpOwners, controls } })
+        dispatchManagementLifecycle({ type: "own-commit", baseline: { ...baseline, snapshot: saved } })
         configContentRef.current = saved.content
         setConfigContent(saved.content)
         setConfigContentError("集合声明已保存，YAML 尚未完成；集合列表沿用最近可解析声明，请在配置中心继续编辑")
@@ -1036,8 +1005,8 @@ export function useManagedProviderWorkspace(
         notify("配置已保存，待修正后应用")
         return true
       }
-      const result = await saveCollectionSettings({ configName: source.name, expectedConfigSha256: source.sha256,
-        category: item.category, name: item.name, ...draft, expectedFileSha256: item.sha256 ?? undefined })
+      const result = await saveCollectionSettings({ configName: currentSource.name, expectedConfigSha256: currentSource.sha256,
+        category: item.category, name: item.name, ...draft, expectedFileSha256: currentItem.sha256 ?? undefined })
       acceptSourceCommit(result.config, { category: item.category, name: result.name })
       setActiveIds((current) => ({ ...current, [item.category]: result.name }))
       await refresh(true)
@@ -1046,13 +1015,14 @@ export function useManagedProviderWorkspace(
       return true
     } catch (error) {
       const conflict = error instanceof ConfigError && error.status === 409
-      const message = conflict ? `${providerError(error)}；输入已保留，请取消后重新读取并打开设置` : providerError(error)
+      const detail = conflict ? `${providerError(error)}；输入已保留，请取消后重新读取并打开设置` : providerError(error)
+      const message = (savedDrafts ? "原配置及正文草稿已保存；集合设置尚未保存。" : "") + detail
       if (conflict) dispatchManagementLifecycle({ type: "external-conflict", message })
       notify(message, "error")
       return false
     }
     finally { busyRef.current = false; setBusy(false) }
-  }, [controls, files, httpOwners, notify, refresh, snapshot, verifySource, writeDisabled])
+  }, [acceptSourceCommit, apply, editConfigContent, files, httpOwners, itemReader, notify, refresh, snapshot, verifySource, writeDisabled])
 
   const recoverPath = useCallback(async (item: ManagedProviderItem, action: "rename" | "restore") => {
     const change = snapshot?.collectionPathChanges?.find((entry) => entry.category === item.category && entry.name === item.name)
@@ -1091,10 +1061,12 @@ export function useManagedProviderWorkspace(
     verifyRuntimeSource,
     savedPending,
     saveConfigDraft: () => apply(true),
+    validate,
     importCollections,
-    prepareUploadDeclaration: (name: string, operationId: string, category: ProviderCategory, signal: AbortSignal) => {
+    prepareUploadDeclaration: async (name: string, operationId: string, category: ProviderCategory, signal: AbortSignal) => {
       if (!snapshot) throw new Error("来源未确认")
-      return readCollectionUploadDeclaration({ configName: snapshot.name, name, operationId, category }, signal)
+      const result = await readCollectionUploadDeclaration({ configName: snapshot.name, name, operationId, category }, signal)
+      return { snippet: patchCollectionIdentity(result.snippet, { path: "./" + suggestedCollectionFileName(name) }) }
     },
     snapshot,
     items,
@@ -1110,7 +1082,11 @@ export function useManagedProviderWorkspace(
     contentDirty,
     configContent,
     configContentError,
+    applyError,
     contentError: active ? contentErrors[managedProviderContentKey(active)] ?? readErrors[managedProviderContentKey(active)] ?? null : null,
+    contentReadError,
+    contentRetryBlockedReason,
+    retryContent,
     hasContentErrors: Object.values(contentErrors).some(Boolean),
     draftIssue,
     writeDisabled,
@@ -1123,5 +1099,7 @@ export function useManagedProviderWorkspace(
     apply,
     remove,
     editContent,
+    uploadContent,
+    useExistingContent,
   }
 }
