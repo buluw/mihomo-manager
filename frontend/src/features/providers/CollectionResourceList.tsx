@@ -84,7 +84,7 @@ export function CollectionResourceList({
         ) : (
               <ResourceListGroup>
               {[...entries]
-                .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
+                .sort(([left], [right]) => Number(effectiveWritableNames.has(right)) - Number(effectiveWritableNames.has(left)) || left.localeCompare(right, "zh-CN"))
                 .map(([name, provider]) => {
             const displayName = providerDisplayName(name)
             return (

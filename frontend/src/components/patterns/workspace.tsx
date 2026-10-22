@@ -29,18 +29,19 @@ export function WorkspaceBody({ children }: { children: ReactNode }) {
   return <div className="flex min-h-0 overflow-hidden">{children}</div>
 }
 
-export function WorkspaceCategoryTabs({ value, onValueChange, items, disabled = false, className, layout = "page" }: {
+export function WorkspaceCategoryTabs({ value, onValueChange, items, disabled = false, className, layout = "page", listSpacing = "compact" }: {
   value: string
   onValueChange: (value: string) => void
   items: ReadonlyArray<{ value: string; label: string; icon: LucideIcon }>
   disabled?: boolean
   className?: string
   layout?: "page" | "list"
+  listSpacing?: "compact" | "comfortable"
 }) {
   return <Tabs value={value} onValueChange={next => next && onValueChange(next)} className={cn("min-w-0 flex-1 md:flex-none", layout === "list" && "h-full", className)}>
-    <TabsList variant="line" className={cn("grid w-full auto-cols-fr grid-flow-col gap-0 p-0 max-md:min-h-11", layout === "list" ? "group-data-horizontal/tabs:h-full" : "group-data-horizontal/tabs:h-11 md:w-auto")}>
+    <TabsList variant="line" className={cn("grid w-full auto-cols-fr grid-flow-col gap-0 p-0 max-md:min-h-11", layout === "list" ? "group-data-horizontal/tabs:h-full" : "group-data-horizontal/tabs:h-11 md:w-auto", layout === "list" && listSpacing === "comfortable" && "gap-1 md:gap-2")}>
       {items.map(({ value: itemValue, label, icon: Icon }) => <TabsTrigger key={itemValue} value={itemValue} disabled={disabled}
-        className={cn("min-w-0 gap-2 text-sm group-data-horizontal/tabs:after:bottom-0", layout === "list" ? "h-full px-1" : "h-11 px-3 md:w-32")}>
+        className={cn("min-w-0 gap-2 text-sm group-data-horizontal/tabs:after:bottom-0", layout === "list" ? "h-full px-1" : "h-11 px-3 md:w-32", layout === "list" && listSpacing === "comfortable" && "px-2 md:px-3")}>
         {layout === "page" && <Icon data-icon="inline-start" />}{label}
       </TabsTrigger>)}
     </TabsList>

@@ -132,13 +132,18 @@ export function UiStateProvider({ children }: { children: ReactNode }) {
     else if (previousLocation.current.pathname !== "/runtime-config") runtimeReturnLocation.current = previousLocation.current;
     previousLocation.current = location;
   }
-  const blocker = useBlocker(({ currentLocation, nextLocation, historyAction }) =>
-    shouldBlockNavigation(guard, currentLocation, nextLocation, runtimeReturnLocation.current, historyAction),
-  );
+  const blockedAction = useRef<string | undefined>(undefined);
+  const blocker = useBlocker(({ currentLocation, nextLocation, historyAction }) => {
+    const blocked = shouldBlockNavigation(guard, currentLocation, nextLocation, runtimeReturnLocation.current, historyAction);
+    if (blocked) blockedAction.current = historyAction;
+    return blocked;
+  });
   const resolvedNavigation = useRef<typeof blocker | null>(null);
   const blockedNavigationReason =
-    blocker.state === "blocked" ? navigationBlockReason(guard) : null;
+    blocker.state === "blocked" && shouldBlockNavigation(guard, location, blocker.location, runtimeReturnLocation.current, blockedAction.current) ? navigationBlockReason(guard) : null;
   const pendingNavigation = blockedNavigationReason === "pending-write";
+  const localInputNavigation = guard.localDirty && blocker.state === "blocked" &&
+    !shouldBlockNavigation({ dirty: true, pendingWrite: false }, location, blocker.location, runtimeReturnLocation.current, blockedAction.current);
 
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -204,14 +209,17 @@ export function UiStateProvider({ children }: { children: ReactNode }) {
 
   const confirmDiscard = useCallback(async () => {
     if (guard.pendingWrite) return false;
-    if (!guard.dirty) return true;
+    if (!guard.dirty && !guard.localDirty) return true;
     const accepted = await askConfirm({
       title: "放弃未保存的修改？",
       message: "当前页面的修改还没有保存，离开后将无法恢复。",
       confirmLabel: "放弃并离开",
       danger: true,
     });
-    if (accepted) setDirtyGuard((current) => ({ ...current, dirty: false }));
+    if (accepted) {
+      if (guard.localDirty) guard.onDiscardLocal?.();
+      setDirtyGuard((current) => ({ ...current, dirty: false, localDirty: false }));
+    }
     return accepted;
   }, [askConfirm, guard]);
 
@@ -237,19 +245,20 @@ export function UiStateProvider({ children }: { children: ReactNode }) {
     const reason = navigationBlockReason(guard);
     if (reason === "pending-write") return;
     resolvedNavigation.current = blocker;
+    if (guard.localDirty) guard.onDiscardLocal?.();
     blocker.proceed();
   }, [blocker, guard]);
 
   const value = useMemo(
     () => ({
-      dirty: guard.dirty,
+      dirty: guard.dirty || Boolean(guard.localDirty),
       pendingWrite: guard.pendingWrite,
       setDirtyGuard,
       confirmDiscard,
       askConfirm,
       askPrompt,
     }),
-    [askConfirm, askPrompt, confirmDiscard, guard.dirty, guard.pendingWrite, setDirtyGuard],
+    [askConfirm, askPrompt, confirmDiscard, guard.dirty, guard.localDirty, guard.pendingWrite, setDirtyGuard],
   );
 
   return (
@@ -261,10 +270,10 @@ export function UiStateProvider({ children }: { children: ReactNode }) {
             kind: "confirm",
             title: pendingNavigation
               ? "写入尚未完成"
-              : "放弃未保存的修改？",
+              : localInputNavigation ? "放弃未确认的输入？" : "放弃未保存的修改？",
             message: pendingNavigation
               ? "当前操作尚未完成，请等待结果确认后再离开。"
-              : "当前页面的修改还没有保存，离开后将无法恢复。",
+              : localInputNavigation ? "离开将放弃当前表单输入，已确认的共享草稿继续保留。" : "当前页面的修改还没有保存，离开后将无法恢复。",
             confirmLabel: pendingNavigation ? "继续等待" : "放弃并离开",
             cancelLabel: pendingNavigation ? "" : "取消",
             danger: blockedNavigationReason === "dirty",

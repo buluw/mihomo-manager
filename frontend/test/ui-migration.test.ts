@@ -3,7 +3,7 @@ import { managerSettingsForm } from "../src/features/system/managerSettingsForm.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ConfigError } from "../src/api/configClient.ts";
-import { cleanCollectionLocation, collectionEditLocation, configEditLocation, configRenameLocation, readCollectionTarget } from "../src/shared/collectionTarget.ts";
+import { cleanCollectionLocation, collectionEditLocation, configEditLocation, configRenameLocation, openCollectionWorkspace, readCollectionTarget } from "../src/shared/collectionTarget.ts";
 
 import {
   compatibilityRedirects,
@@ -114,6 +114,27 @@ test("history targets guard source changes while version, selection and runtime 
   const legacy = { pathname: "/collections", search: "?source=A.yaml&sha256=bad" };
   assert.equal(shouldBlockNavigation(dirty, legacy, cleanCollectionLocation(legacy)), false);
   assert.equal(shouldBlockNavigation(dirty, legacy, other), true);
+});
+
+test("collection history preserves accepted drafts and guards unconfirmed input and pending writes", () => {
+  const source = { name: "A.yaml", sha256: "a".repeat(64) };
+  for (const list of [{ pathname: "/collections", key: "list" }, { ...collectionEditLocation(source), key: "list" }]) {
+    const manage = openCollectionWorkspace(list, "manage", "manage", { category: "proxy", name: "first" });
+    const editor = openCollectionWorkspace(manage, "editor", "editor", { category: "proxy", name: "second" });
+    const accepted = { dirty: true, pendingWrite: false };
+    const local = { ...accepted, localDirty: true };
+    const pending = { ...accepted, pendingWrite: true };
+    for (const [from, to, action] of [[manage, editor, "PUSH"], [editor, manage, "POP"], [manage, editor, "POP"]] as const) {
+      assert.equal(shouldBlockNavigation(accepted, from, to, null, action), false);
+      assert.equal(shouldBlockNavigation(local, from, to, null, action), true);
+      assert.equal(shouldBlockNavigation(pending, from, to, null, action), true);
+    }
+    assert.equal(shouldBlockNavigation(local, manage, { ...manage, key: "same-view-other-entry" }, null, "POP"), true);
+    for (const guard of [accepted, local, pending]) assert.equal(shouldBlockNavigation(guard, manage, editor, null, "REPLACE"), false);
+    assert.equal(shouldBlockNavigation(local, manage, "/runtime-config", null, "PUSH"), true);
+  }
+  assert.equal(navigationBlockReason({ dirty: false, pendingWrite: false, localDirty: true }), "dirty");
+  assert.equal(navigationBlockReason({ dirty: false, pendingWrite: true, localDirty: true }), "pending-write");
 });
 
 test("confirmed config rename replaces only its current history identity while preserving draft navigation protection", () => {

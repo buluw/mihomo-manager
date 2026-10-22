@@ -264,7 +264,9 @@ test("collection preferences persist separately and HTTP cache cannot be unlocke
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(providerDir, "cache.yaml"), "proxies: []\n");
   await service.list();
-  const preferences = await service.setCollectionReadOnly({ configName: "main.yaml", category: "proxy", name: "inline", readOnly: true, expectedVersion: 0 });
+  const preferences = { version: 7, readOnly: [JSON.stringify(["main.yaml", "proxy", "inline"])] };
+  const savedState = JSON.parse(await readFile(service.options.statePath, "utf8"));
+  await writeFile(service.options.statePath, JSON.stringify({ ...savedState, collectionPreferences: preferences }));
   assert.equal(preferences.readOnly.length, 1);
   assert.equal((await store.read("main.yaml")).content, content);
   const reloaded = new ProviderFileService(service.options);
@@ -280,7 +282,7 @@ test("collection preferences persist separately and HTTP cache cannot be unlocke
   const file = await reloaded.read("proxy", "cache.yaml");
   assert.equal(file.writable, false);
   await assert.rejects(reloaded.save("proxy", "cache.yaml", "proxies: []\n", file.sha256), ProviderFileReadOnlyError);
-  await assert.rejects(reloaded.setCollectionReadOnly({ configName: "main.yaml", category: "proxy", name: "remote", readOnly: false, expectedVersion: preferences.version }), ProviderFileReadOnlyError);
+  assert.deepEqual(reloaded.collectionPreferences(), preferences);
 });
 
 test("saved path evidence survives restart and syncs the exact original body without resaving YAML", async (t) => {

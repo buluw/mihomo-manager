@@ -4,18 +4,17 @@ import type { ConfigSnapshot } from "@/api/configClient"
 import { MonacoWorkspace } from "@/components/patterns/monaco-workspace"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { useUiState } from "@/app/state/uiState"
-import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { managedConfigIdentity } from "./managedProviderState"
-import { managedProviderDeclarationSnippet, type ManagedProviderItem } from "./managedProviderModel"
+import { type ManagedProviderItem } from "./managedProviderModel"
 import type { useManagedProviderWorkspace } from "./useManagedProviderWorkspace"
 import { CollectionHttpFields } from "./CollectionHttpFields"
 import { patchCollectionIdentity } from "./collectionNaming"
+import { CollectionGroupChoices } from "./CollectionGroupChoices"
 
 type Workspace = ReturnType<typeof useManagedProviderWorkspace>
 
@@ -26,17 +25,21 @@ export function CollectionSettingsDialog({ item, source, workspace, onClose, onD
   onClose: () => void
   onDirtyChange: (dirty: boolean) => void
 }) {
-  const baseline = useMemo(() => managedProviderDeclarationSnippet({ ...item, declared: true }), [item])
-  const [snippet, setSnippet] = useState(baseline)
-  const snippetRef = useRef(baseline)
+  const [baseline] = useState(() => workspace.settingsDraft(item))
+  const [snippet, setSnippet] = useState(baseline.snippet)
+  const snippetRef = useRef(baseline.snippet)
   const editSnippet = (value: string) => { snippetRef.current = value; setSnippet(value) }
-  const [loaded, setLoaded] = useState(item.declared)
-  const [selectedGroups, setSelectedGroups] = useState(item.selectedGroups)
+  const loaded = item.declared
+  const [selectedGroups, setSelectedGroups] = useState(baseline.selectedGroups)
+  const [newGroups, setNewGroups] = useState(baseline.newGroupNames)
+  const [groupNameInput, setGroupNameInput] = useState("")
+  const groupPending = Boolean(groupNameInput)
   const [tab, setTab] = useState<"settings" | "declaration">("settings")
   const [intervalValid, setIntervalValid] = useState(true)
-  const [expectedSource, setExpectedSource] = useState(source)
+  const expectedSource = source
   const { askConfirm } = useUiState()
-  const dirty = snippet !== baseline || loaded !== item.declared || JSON.stringify(selectedGroups) !== JSON.stringify(item.selectedGroups)
+  const changed = (text: string) => text !== baseline.snippet || loaded !== item.declared || JSON.stringify(selectedGroups) !== JSON.stringify(baseline.selectedGroups) || JSON.stringify(newGroups) !== JSON.stringify(baseline.newGroupNames)
+  const dirty = groupPending || changed(snippet)
 
   useEffect(() => {
     onDirtyChange(dirty)
@@ -70,23 +73,21 @@ export function CollectionSettingsDialog({ item, source, workspace, onClose, onD
   const http = item.access === "http"
   const interval = Number(parsed.declaration?.interval ?? 0)
   const disabled = workspace.writeDisabled
-  const staged = item.declaration?.type === "file" && item.writable && ["manual", "external"].includes(item.access) && item.fileIssue === "missing" && !item.sha256
   const sourceChanged = workspace.identityStatus === "stale" || !managedConfigIdentity(workspace.snapshot, expectedSource.name, expectedSource.sha256)
   const close = async () => {
     if (workspace.busy) return
-    if (!dirty || await askConfirm({ title: "放弃未保存的修改？", message: "集合设置还没有保存。", confirmLabel: "放弃修改", cancelLabel: "继续编辑", danger: true })) onClose()
+    if (!dirty || await askConfirm({ title: "放弃未保存的修改？", message: "集合设置尚未确认。", confirmLabel: "放弃修改", cancelLabel: "继续编辑", danger: true })) onClose()
   }
   const save = () => {
     const currentSnippet = snippetRef.current
-    const changed = currentSnippet !== baseline || loaded !== item.declared || JSON.stringify(selectedGroups) !== JSON.stringify(item.selectedGroups)
-    if (disabled || sourceChanged || !changed) return
-    void workspace.saveSettings(item, expectedSource, { snippet: currentSnippet, loaded, selectedGroups }, setExpectedSource).then((ok) => { if (ok) onClose() })
+    if (disabled || sourceChanged || groupPending || !changed(currentSnippet)) return
+    void workspace.saveSettings(item, expectedSource, { snippet: currentSnippet, loaded, selectedGroups, newGroupNames: newGroups }).then((ok) => { if (ok) onClose() })
   }
   return <Dialog open onOpenChange={(open) => { if (!open) void close() }}>
     <DialogContent className="grid h-[min(82dvh,760px)] w-[calc(100vw-2rem)] max-w-5xl grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-5xl">
       <DialogHeader className="px-5 py-4">
         <DialogTitle>{item.name} · 设置</DialogTitle>
-        <DialogDescription>{staged ? "设置加入当前集合草稿，统一保存或应用时发布。" : workspace.dirty ? "保存时先保存当前配置及正文草稿，再更新集合设置；应用后改变 Core。" : `保存到 ${source.name}，应用后改变 Core。`}</DialogDescription>
+        <DialogDescription>来源：{source.name}。设置与声明加入共享草稿，使用顶部保存或应用。</DialogDescription>
       </DialogHeader>
       <Tabs value={tab} onValueChange={(value) => { if (value === "settings" || value === "declaration") setTab(value) }} className="border-y px-4">
         <TabsList variant="line"><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="declaration">集合声明</TabsTrigger></TabsList>
@@ -108,28 +109,16 @@ export function CollectionSettingsDialog({ item, source, workspace, onClose, onD
           <FieldGroup>
             <Field><FieldLabel htmlFor="collection-settings-name">集合名称</FieldLabel><Input id="collection-settings-name" value={parsed.name} disabled={disabled || !parsed.declaration} onChange={(event) => editSnippet(patchCollectionIdentity(snippetRef.current, { name: event.target.value }))} /></Field>
             {parsed.declaration?.type !== "inline" && <Field><FieldLabel htmlFor="collection-settings-filename">文件名</FieldLabel>
-              <Input id="collection-settings-filename" value={String(parsed.declaration?.path ?? "").split(/[\\/]/).at(-1) ?? ""} disabled={disabled || !parsed.declaration || item.access === "local" || item.access === "subscription"} onChange={(event) => {
-                if (/[\\/]/.test(event.target.value)) return
-                const path = String(parsed.declaration?.path ?? "").replaceAll("\\", "/")
-                patch("path", (path.replace(/[^/]*$/, "") || "./") + event.target.value)
-              }} />
+              <Input id="collection-settings-filename" value={String(parsed.declaration?.path ?? "").split(/[\\/]/).at(-1) ?? ""} disabled />
               <FieldDescription className="break-all">路径：{String(parsed.declaration?.path ?? "未设置")}{item.access === "local" || item.access === "subscription" ? "（自动提取文件）" : ""}</FieldDescription>
             </Field>}
-            <Field orientation="horizontal"><div className="flex-1"><FieldLabel htmlFor="collection-reference">在此配置中使用</FieldLabel><FieldDescription>引用开关只修改本弹窗草稿。</FieldDescription></div>
-              <Switch id="collection-reference" checked={loaded} disabled={disabled} onCheckedChange={setLoaded} />
-            </Field>
-            {item.category === "proxy" && loaded && <Field><FieldLabel>所属代理组</FieldLabel>
-              <div className="flex flex-wrap gap-4">{item.groups.map((name) => <label key={name} className="flex max-md:min-h-11 max-md:px-3.5 items-center gap-2 text-sm">
-                <Checkbox checked={item.implicitGroups?.includes(name) || selectedGroups.includes(name)} disabled={disabled || item.implicitGroups?.includes(name)}
-                  onCheckedChange={(checked) => setSelectedGroups((current) => checked ? [...new Set([...current, name])] : current.filter((group) => group !== name))} />{name}
-              </label>)}</div>
-            </Field>}
+            {item.category === "proxy" && loaded && <CollectionGroupChoices content={workspace.settingsContent} collectionName={parsed.name || item.name} selected={selectedGroups} newGroups={newGroups} pendingName={groupNameInput} disabled={disabled} onPendingNameChange={setGroupNameInput} onChange={(selected, names) => { setSelectedGroups(selected); setNewGroups(names) }} />}
             {http && <>
               <Field><FieldLabel htmlFor="collection-http-url">HTTP 地址</FieldLabel><Input id="collection-http-url" value={String(parsed.declaration?.url ?? "")} disabled={disabled || Boolean(parsed.error)} onChange={(event) => patch("url", event.target.value)} /></Field>
               <CollectionHttpFields interval={interval} disabled={disabled || Boolean(parsed.error)} onChange={(seconds) => patch("interval", seconds)} onValidChange={setIntervalValid} />
             </>}
             {item.category === "rule" && <Field><FieldLabel>规则行为</FieldLabel><Input value={String(parsed.declaration?.behavior ?? "classical")} disabled={disabled || Boolean(parsed.error)} onChange={(event) => patch("behavior", event.target.value)} /></Field>}
-            <FieldDescription>完整设置可在“集合声明”中编辑。HTTP 缓存与自动提取正文保持只读。</FieldDescription>
+            <FieldDescription>文件名在管理集合中修改。完整设置可在“集合声明”中编辑。HTTP 缓存与自动提取正文保持只读。</FieldDescription>
           </FieldGroup>
         </div>
       </div>
@@ -138,7 +127,7 @@ export function CollectionSettingsDialog({ item, source, workspace, onClose, onD
         {sourceChanged ? <Alert variant="destructive"><AlertDescription>配置或版本已变化，输入已保留。请取消后重新读取，再打开设置。</AlertDescription></Alert>
           : workspace.identityStatus !== "ready" && <Alert><AlertDescription>{workspace.message}</AlertDescription></Alert>}
         <DialogFooter className="m-0 px-5 py-3"><Button variant="outline" disabled={workspace.busy} onClick={() => void close()}>取消</Button>
-          <Button disabled={disabled || sourceChanged || !dirty || (tab === "settings" && !intervalValid)} onClick={save}>{staged ? "加入草稿" : "保存配置"}</Button>
+          <Button disabled={disabled || sourceChanged || groupPending || !dirty || (tab === "settings" && !intervalValid)} onClick={save}>确认</Button>
         </DialogFooter>
       </div>
     </DialogContent>

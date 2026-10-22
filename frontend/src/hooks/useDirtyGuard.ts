@@ -2,11 +2,11 @@
 import { useEffect } from "react";
 import { useUiState } from "../app/state/uiState";
 
-export function useDirtyGuard(dirty: boolean, pendingWrite: boolean) {
+export function useDirtyGuard(dirty: boolean, pendingWrite: boolean, local?: { dirty: boolean; onDiscard: () => void }) {
   const { setDirtyGuard, confirmDiscard } = useUiState();
   useEffect(() => {
-    setDirtyGuard({ dirty, pendingWrite });
+    setDirtyGuard({ dirty, pendingWrite, localDirty: local?.dirty, onDiscardLocal: local?.onDiscard });
     return () => setDirtyGuard({ dirty: false, pendingWrite: false });
-  }, [dirty, pendingWrite, setDirtyGuard]);
+  }, [dirty, pendingWrite, local?.dirty, local?.onDiscard, setDirtyGuard]);
   return confirmDiscard;
 }

@@ -1,6 +1,7 @@
 import { parseDocument, stringify } from "yaml"
 import { normalizeProviderFileName, type ManagedProviderItem } from "./managedProviderModel.ts"
 import { deleteManagedProviderConfig, replaceCollectionUploadDeclaration, updateManagedProviderConfig } from "./managedProviderYaml.ts"
+import { stageCollectionGroups } from "./collectionGroupDraft.ts"
 
 export function suggestedCollectionFileName(name: string) {
   const stem = name.trim().replace(/\.ya?ml$/i, "").replace(/[^\p{L}\p{N}._ -]/gu, "-").replace(/^[^\p{L}\p{N}]+/u, "").slice(0, 100).trim()
@@ -32,7 +33,7 @@ export function assertCollectionPathAvailable(content: string, category: "proxy"
   if (Object.entries(declarations).some(([name, entry]) => name !== currentName && entry && typeof entry === "object" && normalized((entry as Record<string, unknown>).path) === normalized(path))) throw new Error("当前配置中已有集合使用该路径，请更换文件名")
 }
 
-export function stageCollectionSettings(content: string, item: ManagedProviderItem, draft: { snippet: string; loaded: boolean; selectedGroups: string[] }) {
+export function stageCollectionSettings(content: string, item: ManagedProviderItem, draft: { snippet: string; loaded: boolean; selectedGroups: string[]; newGroupNames?: string[] }) {
   const value = parseDocument(draft.snippet)
   const data = value.toJS()
   const names = data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data) : []
@@ -40,6 +41,7 @@ export function stageCollectionSettings(content: string, item: ManagedProviderIt
   const declaration = data?.[name] as Record<string, unknown> | undefined
   if (value.errors.length || names.length !== 1 || !name.trim() || name !== name.trim() || name.length > 120 || (item.category === "rule" && name.includes(",")) || !declaration || declaration.type !== item.declaration?.type) throw new Error("集合名称或来源类型无效")
   if (!draft.loaded) return { name, content: deleteManagedProviderConfig(content, item), declaration }
+  if (item.category === "proxy") content = stageCollectionGroups(content, draft.newGroupNames ?? [], draft.selectedGroups, name)
   if (typeof declaration.path === "string") assertCollectionPathAvailable(content, item.category, declaration.path, item.name)
   const source = parseDocument(content).toJS()
   if (name !== item.name && (source?.[item.category + "-providers"]?.[name] || source?.["proxy-groups"]?.some((group: { name?: string }) => group.name === name))) throw new Error("集合名称已存在")

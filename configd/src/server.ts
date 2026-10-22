@@ -272,9 +272,11 @@ export function createConfigdServer(options: ConfigdServerOptions) {
             (entry.expectedSha256 !== null && (typeof entry.expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(entry.expectedSha256)))) ||
           body.removals.some((entry) => !entry || !["proxy", "rule"].includes(entry.category) || typeof entry.name !== "string")) throw new RequestError("invalid collection workspace");
         if (body.httpProviders !== undefined && (!Array.isArray(body.httpProviders) || body.httpProviders.some((entry) => !entry || !["proxy", "rule"].includes(entry.category) || typeof entry.name !== "string"))) throw new RequestError("invalid HTTP collection catalog");
-        if (collectionWorkspace[2]) return json(response, 200, await options.providerFiles.validateCollectionWorkspace(pathId(collectionWorkspace[1]!), body.content, body.bodies));
+        if (body.fileDrafts !== undefined && (!Array.isArray(body.fileDrafts) || body.fileDrafts.some((entry) => !entry || !["proxy", "rule"].includes(entry.category) || typeof entry.fileName !== "string" || typeof entry.name !== "string" || typeof entry.content !== "string" || (entry.expectedSha256 !== null && (typeof entry.expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(entry.expectedSha256))) || (entry.renameFrom !== undefined && (!entry.renameFrom || typeof entry.renameFrom.fileName !== "string" || typeof entry.renameFrom.expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(entry.renameFrom.expectedSha256)))))) throw new RequestError("invalid collection file drafts");
+        const pendingCleanup = body.cleanupFiles === undefined ? undefined : cleanupFiles(body.cleanupFiles);
+        if (collectionWorkspace[2]) return json(response, 200, await options.providerFiles.validateCollectionWorkspace(pathId(collectionWorkspace[1]!), body.content, [...body.bodies, ...body.fileDrafts ?? []]));
         return json(response, 200, await finalizeConfigSave(await options.providerFiles.saveCollectionWorkspace({
-          configName: pathId(collectionWorkspace[1]!), content: body.content, expectedSha256: body.expectedSha256, bodies: body.bodies, removals: body.removals, httpProviders: body.httpProviders,
+          configName: pathId(collectionWorkspace[1]!), content: body.content, expectedSha256: body.expectedSha256, bodies: body.bodies, removals: body.removals, httpProviders: body.httpProviders, fileDrafts: body.fileDrafts, cleanupFiles: pendingCleanup,
         })));
       }
       if (configFile && request.method === "DELETE") {
@@ -635,14 +637,6 @@ export function createConfigdServer(options: ConfigdServerOptions) {
       }
       if (providerFiles && url.pathname === "/collection-preferences") {
         if (request.method === "GET") return json(response, 200, providerFiles.collectionPreferences());
-        if (request.method === "PUT") {
-          const body = await readJson(request, options.maxBodyBytes);
-          if (typeof body.configName !== "string" || typeof body.name !== "string" ||
-            (body.category !== "proxy" && body.category !== "rule") || typeof body.readOnly !== "boolean" ||
-            !Number.isSafeInteger(body.expectedVersion)) throw new RequestError("invalid collection preferences");
-          return json(response, 200, await providerFiles.setCollectionReadOnly({ configName: body.configName,
-            name: body.name, category: body.category, readOnly: body.readOnly, expectedVersion: body.expectedVersion as number }));
-        }
       }
       if (providerFiles && request.method === "PUT" && url.pathname === "/collection-settings") {
         const body = await readJson(request, options.maxBodyBytes);

@@ -98,7 +98,7 @@ export function ConfigCenterPage({ notify }: { notify: Notify }) {
       const target = item?.status === "missing" ? fresh.providerIssues?.find((issue) => issue.category === item.category && issue.name === item.name && issue.status === "missing")
         : fresh.providerIssues?.find((issue) => issue.status === "missing")
       if (!target) { notify("该配置没有缺失集合，请重新读取配置状态"); return }
-      const destination = collectionEditLocation(source, target ? { category: target.category, name: target.name, repair: target.status === "missing" } : undefined)
+      const destination = collectionEditLocation(source, target ? { category: target.category, name: target.name, repair: target.status === "missing" } : undefined, location.key)
       navigate(destination.pathname, { state: destination.state })
     } catch { notify("无法确认集合编辑目标，请重新读取配置", "error") }
   }

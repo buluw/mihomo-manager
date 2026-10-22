@@ -6,6 +6,67 @@ import { managedCollectionItems, managedProviderItems } from "../src/features/pr
 import { replaceCollectionUploadDeclaration, updateManagedProviderConfig } from "../src/features/providers/managedProviderYaml.ts"
 import { parse } from "yaml"
 import { assertCollectionPathAvailable, collectionFileName, patchCollectionIdentity, stageCollectionSettings, suggestedCollectionFileName } from "../src/features/providers/collectionNaming.ts"
+import { collectionGroupNameError, stageCollectionGroups } from "../src/features/providers/collectionGroupDraft.ts"
+import { managedDeclarationDraft, managedProviderDiscardState } from "../src/features/providers/managedProviderState.ts"
+import { managedProviderBodyWritable } from "../src/features/providers/managedProviderModel.ts"
+
+test("unfinished declaration retains confirmed group candidates and selections through reopen, correction and discard", () => {
+  const content = "proxy-providers: {sample: {type: inline, payload: [{name: FixtureDirect, type: direct}]}}\nproxy-groups: [{name: existing, type: select, proxies: [DIRECT]}]\n"
+  const snapshot = { name: "fixture.yaml", path: "", sha256: "fixture", content }
+  const item = managedProviderItems(snapshot, [], "proxy")[0]!
+  const unfinished = managedDeclarationDraft(item, { snippet: "sample: [", selectedGroups: ["confirmed"], newGroupNames: ["confirmed", "unchecked"] })
+  const reopened = managedDeclarationDraft(item, unfinished)
+  assert.deepEqual(reopened, unfinished)
+  reopened.selectedGroups.length = 0
+  assert.deepEqual(unfinished.selectedGroups, ["confirmed"])
+  const corrected = stageCollectionSettings(content, item, { ...managedDeclarationDraft(item, unfinished), snippet: managedDeclarationDraft(item).snippet, loaded: true })
+  assert.deepEqual(parse(corrected.content)["proxy-groups"][1], { name: "confirmed", type: "select", use: ["sample"] })
+  const unselected = stageCollectionSettings(content, item, { ...reopened, snippet: managedDeclarationDraft(item).snippet, loaded: true })
+  assert.equal(parse(unselected.content)["proxy-groups"].length, 1)
+  const baseline = { snapshot, files: [], httpOwners: [], controls: {} }
+  assert.deepEqual(managedProviderDiscardState(baseline).declarationDrafts, {})
+  const saved = managedProviderDiscardState({ ...baseline, snapshot: { ...snapshot, content: "proxy-providers: [" }, lastValidContent: content }, { [item.id]: unfinished })
+  assert.deepEqual(saved.declarationDrafts[item.id], unfinished)
+  assert.equal(saved.lastValidConfigContent, content)
+})
+
+test("body writability follows source permissions for both collection categories", () => {
+  for (const access of ["manual", "external", "inline", "http", "subscription", "local"] as const) {
+    assert.equal(managedProviderBodyWritable({ access, writable: true }), ["manual", "external", "inline"].includes(access))
+    assert.equal(managedProviderBodyWritable({ access, writable: false }), false)
+    assert.equal(managedProviderBodyWritable({ access, writable: true, httpCache: true }), false)
+  }
+})
+
+test("group candidates validate names and stage only selected new groups with their collection", () => {
+  const source = "proxy-groups: [{name: existing, type: select, proxies: [DIRECT]}]\nrules: ['MATCH,DIRECT']\n"
+  assert.match(collectionGroupNameError(source, " " )!, /请输入/)
+  assert.match(collectionGroupNameError(source, "existing")!, /已存在/)
+  assert.match(collectionGroupNameError(source, "pending", ["pending"])!, /已存在/)
+  assert.match(collectionGroupNameError(source, "sample", [], "sample")!, /已存在/)
+  assert.equal(collectionGroupNameError(source, " new "), null)
+  assert.equal(stageCollectionGroups(source, ["new"], [], "sample"), source)
+  const input = { operationId: "group-draft", name: "sample", content: "proxies: [{name: FixtureDirect, type: direct}]", groupNames: ["existing", "new"], newGroupNames: ["new", "unchecked"] }
+  for (const type of ["file", "inline", "http"] as const) {
+    const result = parse(createCollectionDraft(source, input, type, "https://example.invalid/fixture.yaml", "proxy", "./fixture.yaml").content)
+    assert.deepEqual(result["proxy-groups"].map((group: { name: string }) => group.name), ["existing", "new"])
+    assert.deepEqual(result["proxy-groups"][1], { name: "new", type: "select", use: ["sample"] })
+    assert.deepEqual(result.rules, ["MATCH,DIRECT"])
+  }
+  assert.throws(() => createCollectionDraft(source, { ...input, newGroupNames: ["existing"] }, "file", "", "proxy", "./fixture.yaml"), /已存在/)
+})
+
+test("collection settings stage selected new groups with renamed references", () => {
+  const content = "proxy-providers: {sample: {type: inline, payload: [{name: FixtureDirect, type: direct}]}}\nproxy-groups: [{name: existing, type: select, proxies: [DIRECT], use: [sample]}]\nrules: ['MATCH,DIRECT']\n"
+  const item = managedProviderItems({ name: "fixture.yaml", path: "", sha256: "fixture", content }, [], "proxy")[0]!
+  const result = parse(stageCollectionSettings(content, item, { snippet: "renamed: {type: inline, payload: [{name: FixtureDirect, type: direct}]}", loaded: true, selectedGroups: ["new"], newGroupNames: ["new", "unchecked"] }).content)
+  assert.equal(result["proxy-providers"].sample, undefined)
+  assert.ok(result["proxy-providers"].renamed)
+  assert.equal(result["proxy-groups"][0].use, undefined)
+  assert.deepEqual(result["proxy-groups"][1], { name: "new", type: "select", use: ["renamed"] })
+  assert.equal(result["proxy-groups"].length, 2)
+  assert.deepEqual(result.rules, ["MATCH,DIRECT"])
+})
 
 test("collection filenames are readable, editable and scoped by declaration path", () => {
   assert.equal(suggestedCollectionFileName("香港 节点"), "香港 节点.yaml")

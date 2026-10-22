@@ -10,7 +10,14 @@ export type CollectionTarget = {
 }
 
 export type NavigationLocation = { pathname: string; search?: string; state?: unknown; key?: string }
-const targetKeys = ["source", "sha256", "category", "collection", "repair"] as const
+export type CollectionWorkspaceView = "list" | "manage" | "editor"
+export type CollectionWorkspaceNavigation = {
+  view: CollectionWorkspaceView
+  entry: string
+  returnView: CollectionWorkspaceView | "config" | null
+  returnKey: string | null
+}
+const targetKeys = ["source", "sha256", "category", "collection", "repair", "view", "entry", "returnView", "returnKey"] as const
 
 export function collectionNavigationState(location: Pick<NavigationLocation, "search" | "state">) {
   const params = new URLSearchParams(location.search)
@@ -28,7 +35,39 @@ export function collectionNavigationState(location: Pick<NavigationLocation, "se
       }
     }
   }
+  if (metadata.view && !["list", "manage", "editor"].includes(metadata.view)) delete metadata.view
+  if (metadata.returnView && !["list", "manage", "editor", "config"].includes(metadata.returnView)) delete metadata.returnView
+  for (const key of ["entry", "returnKey"]) if (metadata[key] && !/^[a-zA-Z0-9_-]{1,80}$/.test(metadata[key]!)) delete metadata[key]
   return { collectionTarget: metadata }
+}
+
+export function readCollectionWorkspace(location: Pick<NavigationLocation, "search" | "state" | "key">): CollectionWorkspaceNavigation {
+  const metadata = collectionNavigationState(location).collectionTarget
+  return {
+    view: metadata.view as CollectionWorkspaceView || (metadata.collection ? "editor" : "list"),
+    entry: metadata.entry || location.key || "default",
+    returnView: metadata.returnView as CollectionWorkspaceNavigation["returnView"] || (metadata.source ? "config" : null),
+    returnKey: metadata.returnKey || null,
+  }
+}
+
+export function collectionSelectionLocation(location: NavigationLocation, item: { category: "proxy" | "rule"; name: string }) {
+  const state = collectionNavigationState(location)
+  state.collectionTarget.category = item.category
+  state.collectionTarget.collection = item.name
+  delete state.collectionTarget.repair
+  return { pathname: "/collections", state }
+}
+
+export function openCollectionWorkspace(location: NavigationLocation, view: CollectionWorkspaceView, entry: string, item?: { category: "proxy" | "rule"; name: string }) {
+  const state = item ? collectionSelectionLocation(location, item).state : collectionNavigationState(location)
+  const current = readCollectionWorkspace(location)
+  Object.assign(state.collectionTarget, { view, entry, returnView: current.view, returnKey: current.entry })
+  return { pathname: "/collections", state }
+}
+
+export function resolveCommittedCollectionSource(source: CollectionSource | null, latest: CollectionSource | null, acceptedVersions: ReadonlySet<string>) {
+  return source && latest && source.name === latest.name && acceptedVersions.has(source.sha256) ? latest : source
 }
 
 export function cleanCollectionLocation(location: NavigationLocation) {
@@ -55,8 +94,9 @@ export function collectionSourceMatches(snapshot: CollectionSource | null, sourc
   return Boolean(snapshot && source && snapshot.name === source.name && snapshot.sha256 === source.sha256)
 }
 
-export function collectionEditLocation(source: CollectionSource, item?: { category: "proxy" | "rule"; name: string; repair?: boolean }) {
-  const metadata: Record<string, string> = { source: source.name, sha256: source.sha256 }
+export function collectionEditLocation(source: CollectionSource, item?: { category: "proxy" | "rule"; name: string; repair?: boolean }, returnKey?: string) {
+  const metadata: Record<string, string> = { source: source.name, sha256: source.sha256, view: item ? "editor" : "list", returnView: "config" }
+  if (returnKey) metadata.returnKey = returnKey
   if (item) {
     metadata.category = item.category
     metadata.collection = item.name

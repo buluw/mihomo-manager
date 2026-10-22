@@ -5,6 +5,7 @@ import {
   managedHttpCatalog,
   managedProviderContentKey,
   managedProviderControlsForItem,
+  managedProviderDeclarationSnippet,
   normalizedReference,
   recordValue,
   ruleSetRules,
@@ -12,6 +13,13 @@ import {
   type ManagedProviderItem,
 } from "./managedProviderModel.ts"
 import { validateInlineProviderDraft } from "./managedProviderYaml.ts"
+
+export type ManagedDeclarationDraft = { snippet: string; selectedGroups: string[]; newGroupNames: string[] }
+
+export function managedDeclarationDraft(item: ManagedProviderItem, draft?: { snippet: string; selectedGroups: string[]; newGroupNames?: string[] }): ManagedDeclarationDraft {
+  return { snippet: draft?.snippet ?? managedProviderDeclarationSnippet({ ...item, declared: true }),
+    selectedGroups: [...(draft?.selectedGroups ?? item.selectedGroups)], newGroupNames: [...(draft?.newGroupNames ?? [])] }
+}
 
 export function managedHttpOwnerChangeIds(
   currentOwners: ManagedHttpProviderOwner[],
@@ -88,13 +96,14 @@ export function managementBaselineKey(managementOnly: boolean, name: string | nu
 }
 
 export type ManagementBaseline = {
+  lastValidContent?: string
   snapshot: ConfigSnapshot
   files: ManagedProviderFile[]
   httpOwners: ManagedHttpProviderOwner[]
   controls: Record<string, ManagedProviderControls>
 }
 
-export function managedProviderDiscardState(baseline: ManagementBaseline) {
+export function managedProviderDiscardState(baseline: ManagementBaseline, savedDeclarations: Record<string, ManagedDeclarationDraft> = {}) {
   const httpOwners = baseline.httpOwners.map((owner) => structuredClone(owner))
   const controls = Object.fromEntries(Object.entries(baseline.controls).map(([id, value]) => [id, {
     ...value,
@@ -103,14 +112,14 @@ export function managedProviderDiscardState(baseline: ManagementBaseline) {
   }]))
   return {
     configContent: baseline.snapshot.content,
-    lastValidConfigContent: baseline.snapshot.content,
+    lastValidConfigContent: baseline.lastValidContent ?? baseline.snapshot.content,
     httpOwners,
     controls,
     contents: {} as Record<string, string>,
     savedContents: {} as Record<string, string>,
     contentErrors: {} as Record<string, string | null>,
-    declarationDrafts: {} as Record<string, string>,
-    declarationErrors: {} as Record<string, string | null>,
+    declarationDrafts: structuredClone(savedDeclarations),
+    declarationErrors: Object.fromEntries(Object.keys(savedDeclarations).map(id => [id, "集合声明 YAML 尚未完成；可保存草稿，修正后应用"])),
     configContentError: null,
   }
 }

@@ -26,6 +26,15 @@ const nodes = "proxies:\n  - {name: fixture-direct, type: direct}\n";
 const main = "# keep this comment\nmode: rule\nproxy-groups:\n  - {name: Route, type: select, proxies: [DIRECT]}\nrules: [MATCH,Route]\n";
 const missing = main + "proxy-providers:\n  legacy:\n    type: file\n    path: ./legacy.yaml\n    health-check: {enable: true, url: https://example.invalid/check, interval: 600}\n";
 
+async function seedLegacyReadOnly(service: ProviderFileService, configName: string, category: "proxy" | "rule", name: string) {
+  const state = JSON.parse(await readFile(service.options.statePath, "utf8"));
+  const current = service.collectionPreferences();
+  const preferences = { version: current.version + 1, readOnly: [...current.readOnly, JSON.stringify([configName, category, name])] };
+  await writeFile(service.options.statePath, JSON.stringify({ ...state, collectionPreferences: preferences }));
+  await service.init();
+  return preferences;
+}
+
 async function fixture(t: { after: (fn: () => Promise<unknown>) => void }) {
   const root = await mkdtemp(join(tmpdir(), "mihomo-collection-import-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -199,13 +208,11 @@ test("missing proxy and rule bodies reuse their original manual owner without ch
     await assert.rejects(service.createCollection({ ...input, content: input.content + "# replacement\n" }), ProviderFileConflictError);
     assert.equal(await readFile(join(root, restored.file.referencePath), "utf8"), input.content);
     assert.deepEqual((await state()).manual, originalOwners);
-    const preference = await service.setCollectionReadOnly({ category, configName: source.name, name: category,
-      readOnly: true, expectedVersion: service.collectionPreferences().version });
+    const preference = await seedLegacyReadOnly(service, source.name, category, category);
     await unlink(join(root, restored.file.referencePath));
-    await assert.rejects(service.createCollection(input), ProviderFileReadOnlyError);
-    await writeFile(join(root, restored.file.referencePath), input.content, { flag: "wx" });
-    await service.setCollectionReadOnly({ category, configName: source.name, name: category,
-      readOnly: false, expectedVersion: preference.version });
+    const repaired = await service.createCollection({ ...input, operationId: randomUUID() });
+    assert.equal(repaired.file.content, input.content);
+    assert.deepEqual(service.collectionPreferences(), preference);
   }
   assert.equal(validations(), 0);
   assert.equal((await store.read(source.name)).providerIssues, undefined);
@@ -362,7 +369,7 @@ test("rule imports publish payload and RULE-SET atomically and preserve ordering
   await assert.rejects(service.createCollection({ ...input, operationId: randomUUID(), name: "unused", expectedConfigSha256: saved.config.sha256, ruleSetRules: [] }), ProviderFileValidationError);
 });
 
-test("upload replacement checks source and file versions plus ordinary File and display read-only permissions", async (t) => {
+test("upload replacement checks versions and source permissions while preserving legacy preferences", async (t) => {
   const { store, service } = await fixture(t);
   const file = await service.create("proxy", "replace.yaml", nodes);
   const source = await store.create("replace.yaml", main + `proxy-providers:\n  replace: {type: file, path: ${file.referencePath}}\n`);
@@ -370,10 +377,9 @@ test("upload replacement checks source and file versions plus ordinary File and 
   const input = { category: "proxy" as const, configName: source.name, expectedConfigSha256: source.sha256, operationId: randomUUID(), name: "replace", content, groupNames: [], replace: true, targetFileName: file.fileName, expectedFileSha256: file.sha256 };
   await assert.rejects(service.createCollection({ ...input, expectedConfigSha256: "stale" }));
   await assert.rejects(service.createCollection({ ...input, expectedFileSha256: "stale" }));
-  const pref = await service.setCollectionReadOnly({ configName: source.name, category: "proxy", name: "replace", readOnly: true, expectedVersion: 0 });
-  await assert.rejects(service.createCollection(input));
-  await service.setCollectionReadOnly({ configName: source.name, category: "proxy", name: "replace", readOnly: false, expectedVersion: pref.version });
+  const pref = await seedLegacyReadOnly(service, source.name, "proxy", "replace");
   const replaced = await service.createCollection(input);
+  assert.deepEqual(service.collectionPreferences(), pref);
   assert.equal(replaced.config.sha256, source.sha256);
   assert.equal(replaced.file.content, content);
   await assert.rejects(service.createCollection(input));

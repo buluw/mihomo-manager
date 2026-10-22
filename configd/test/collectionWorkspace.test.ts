@@ -18,6 +18,56 @@ import { createServer } from "node:net";
 
 const proxyBody = "proxies:\n  - {name: fixture, type: socks5, server: 127.0.0.1, port: 9}\n";
 const ruleBody = "payload: [DOMAIN,example.invalid]\n";
+
+test("file management stages rename and detached files in the shared workspace", async (t) => {
+  const f = await fixture(t); const before = await fill(f);
+  const preferences = { version: 9, readOnly: [JSON.stringify([before.name, "proxy", "local"])] };
+  const state = JSON.parse(await readFile(f.options.statePath, "utf8"));
+  await writeFile(f.options.statePath, JSON.stringify({ ...state, collectionPreferences: preferences }));
+  await f.files.init();
+  const old = await f.files.read("proxy", before.collectionPaths!.find(path => path.category === "proxy")!.fileName!);
+  const nextName = old.fileName.replace("local.yaml", "renamed.yaml");
+  await chmod(join(f.root, "providers", old.fileName), 0o640);
+  const config = parse(before.content); config["proxy-providers"].local.path = "./providers/" + nextName;
+  const saved = await f.files.saveCollectionWorkspace({ configName: before.name, expectedSha256: before.sha256, content: stringify(config), bodies: [], removals: [], fileDrafts: [
+    { category: "proxy", name: "local", fileName: nextName, content: proxyBody, expectedSha256: null, renameFrom: { fileName: old.fileName, expectedSha256: old.sha256 } },
+    { category: "rule", name: "detached", fileName: "detached.yaml", content: "payload: [", expectedSha256: null },
+  ] });
+  assert.equal((await f.files.read("proxy", nextName)).content, proxyBody);
+  assert.equal((await stat(join(f.root, "providers", nextName))).mode & 0o777, 0o640);
+  assert.equal((await f.files.read("proxy", old.fileName)).sha256, old.sha256);
+  assert.equal((await f.files.read("rule", "detached.yaml")).content, "payload: [");
+  assert.equal(saved.providerIssues, undefined);
+  assert.deepEqual(f.files.collectionPreferences(), preferences);
+  const unreferenced = parse(saved.content); delete unreferenced["proxy-providers"].local; unreferenced["proxy-groups"][0].use = [];
+  await f.files.saveCollectionWorkspace({ configName: saved.name, expectedSha256: saved.sha256, content: stringify(unreferenced), bodies: [], removals: [] });
+  assert.equal((await f.files.read("proxy", nextName)).content, proxyBody);
+});
+
+test("workspace saves ordinary proxy rule and Inline bodies with unchanged legacy preferences", async (t) => {
+  const f = await fixture(t); const before = await fill(f);
+  const preferences = { version: 11, readOnly: ["local", "inline"].map(name => JSON.stringify([before.name, "proxy", name])).concat(JSON.stringify([before.name, "rule", "rules"])) };
+  const state = JSON.parse(await readFile(f.options.statePath, "utf8"));
+  await writeFile(f.options.statePath, JSON.stringify({ ...state, collectionPreferences: preferences }));
+  await f.files.init();
+  const config = parse(before.content); config["proxy-providers"].inline = { type: "inline", payload: [{ name: "InlineFixture", type: "direct" }] };
+  const bodies = await Promise.all(before.collectionPaths!.map(async path => ({ category: path.category, name: path.name, content: path.category === "proxy" ? proxyBody + "# saved\n" : ruleBody, expectedSha256: (await f.files.read(path.category, path.fileName!)).sha256 })));
+  const saved = await f.files.saveCollectionWorkspace({ configName: before.name, expectedSha256: before.sha256, content: stringify(config), bodies, removals: [] });
+  assert.equal(parse(saved.content)["proxy-providers"].inline.payload[0].type, "direct");
+  for (const body of bodies) { const path = saved.collectionPaths!.find(path => path.category === body.category && path.name === body.name)!; assert.equal((await f.files.read(body.category, path.fileName!)).content, body.content); }
+  assert.deepEqual(f.files.collectionPreferences(), preferences);
+});
+
+test("file management rejects conflicting rename before publishing any file", async (t) => {
+  const f = await fixture(t); const before = await fill(f);
+  const old = await f.files.read("proxy", before.collectionPaths!.find(path => path.category === "proxy")!.fileName!);
+  await assert.rejects(f.files.saveCollectionWorkspace({ configName: before.name, expectedSha256: before.sha256, content: before.content, bodies: [], removals: [], fileDrafts: [
+    { category: "rule", name: "untouched", fileName: "untouched.yaml", content: ruleBody, expectedSha256: null },
+    { category: "proxy", name: "local", fileName: "renamed.yaml", content: proxyBody, expectedSha256: null, renameFrom: { fileName: old.fileName, expectedSha256: "0".repeat(64) } },
+  ] }), ProviderFileConflictError);
+  assert.equal((await f.store.read()).sha256, before.sha256);
+  await assert.rejects(readFile(join(f.root, "ruleset", "untouched.yaml")));
+});
 const source = (prefix = "./") => stringify({
   mode: "rule", "mixed-port": 0,
   "proxy-providers": { local: { type: "file", path: prefix + "local.yaml" } },

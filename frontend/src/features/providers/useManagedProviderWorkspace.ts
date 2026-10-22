@@ -5,24 +5,18 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 
 import {
   ConfigError,
-  readCollectionPreferences,
-  saveCollectionReadOnly,
-  saveCollectionSettings,
-  type CollectionPreferences,
+  previewProviderCleanup,
+  type ProviderCleanupItem,
+  type CollectionFileDraft,
   createConfigChangeSource,
   readCollectionUploadDeclaration,
   readProviderPayload,
-  type ProxyCollectionInput,
-  deleteManagedProviderFile,
-  deleteManagedProviderSource,
-  deleteManagedProviderWithConfig,
   listManagedProviderFiles,
   listManagedHttpProviders,
   readConfigFile,
   resolveCollectionPath,
   readRuntimeLoadState,
   readManagedProviderFile,
-  saveConfigFile,
   saveCollectionWorkspace,
   validateCollectionWorkspace,
   type ConfigSnapshot,
@@ -36,11 +30,14 @@ import type { Notify } from "@/shared/types"
 import { collectionSourceMatches, type CollectionSource } from "@/shared/collectionTarget"
 import { restoreCollectionPath } from "@/shared/collectionPath"
 import { cleanupSummary } from "@/shared/collectionCleanup"
+import { collectionFileRows, renamedCollectionFile, replaceCollectionFilePath, type CollectionFileRow } from "./collectionFileManagement"
 import type { ProviderCategory } from "./collectionViewModel"
-import { createCollectionDraft, readUploadDeclaration } from "./proxyCollectionImport"
+import { collectionShouldReference, createCollectionDraft, readUploadDeclaration, type CollectionDraftInput } from "./proxyCollectionImport"
 import { assertCollectionPathAvailable, collectionFileName, patchCollectionIdentity, stageCollectionSettings, suggestedCollectionFileName } from "./collectionNaming"
 import {
   managedConfigIdentity,
+  managedDeclarationDraft,
+  type ManagedDeclarationDraft,
   managedHttpOwnerChangeIds,
   managedProviderFileHasDraft,
   managedCollectionBodyDrafts,
@@ -64,17 +61,16 @@ import {
 import {
   managedProviderControlsForItem as controlsFor,
   managedProviderContentKey,
-  managedProviderModificationReason,
+  managedProviderBodyWritable,
+  normalizedReference,
   managedCollectionItems,
-  managedProviderDeclarationSnippet,
   type ManagedProviderItem,
   type ManagedProviderControls,
 } from "./managedProviderModel"
-import { replaceCollectionUploadDeclaration, deleteManagedProviderConfig, replaceProviderDraftText, replaceProviderDrafts, inlineProviderDraftText, updateHttpProviderContent } from "./managedProviderYaml"
+import { replaceCollectionUploadDeclaration, deleteManagedProviderConfig, replaceProviderDrafts, inlineProviderDraftText, updateHttpProviderContent } from "./managedProviderYaml"
 import {
   updateCollectionProvider,
   type ManagedProviderApplyResult,
-  type ManagedProviderRemovalResult,
 } from "./providerOperations"
 
 type ItemControls = ManagedProviderControls
@@ -84,7 +80,6 @@ let unifiedSession: {
   baseline: ManagementBaseline
   activeIds: Partial<Record<ProviderCategory, string>>
   contents: Record<string, string>
-  preferences: CollectionPreferences
   savedPending: boolean
 } | null = null
 
@@ -136,9 +131,6 @@ export function useManagedProviderWorkspace(
   const inputDirtyRef = useRef(options.inputDirty)
   inputDirtyRef.current = options.inputDirty
   const [initialSession] = useState(() => !options.source && !options.invalidSource ? unifiedSession : null)
-  const [preferences, setPreferences] = useState<CollectionPreferences>(() =>
-    initialSession?.preferences ?? { version: 0, readOnly: [] }
-  )
   const initialBaseline = initialSession
     ? initialSession.baseline
     : options.source
@@ -163,7 +155,8 @@ export function useManagedProviderWorkspace(
   const [readErrors, setReadErrors] = useState<Record<string, string | null>>({})
   const [configContentError, setConfigContentError] = useState<string | null>(null)
   const [applyError, setApplyError] = useState<string | null>(null)
-  const [declarationDrafts, setDeclarationDrafts] = useState<Record<string, string>>({})
+  const [declarationDrafts, setDeclarationDrafts] = useState<Record<string, ManagedDeclarationDraft>>({})
+  const [savedDeclarationDrafts, setSavedDeclarationDrafts] = useState<Record<string, ManagedDeclarationDraft>>({})
   const [declarationErrors, setDeclarationErrors] = useState<Record<string, string | null>>({})
   const [activeIds, setActiveIds] = useState<Partial<Record<ProviderCategory, string>>>(() =>
     ({ ...initialSession?.activeIds })
@@ -173,6 +166,10 @@ export function useManagedProviderWorkspace(
   const [runtimeSourceName, setRuntimeSourceName] = useState<string | null>(null)
   const [runtimeSource, setRuntimeSource] = useState<CollectionSource | null>(null)
   const [pendingRemovals, setPendingRemovals] = useState<Array<{ category: ProviderCategory; name: string }>>([])
+  const [fileDrafts, setFileDrafts] = useState<CollectionFileDraft[]>([])
+  const [cleanupFiles, setCleanupFiles] = useState<ProviderCleanupItem[]>([])
+  const [fileCatalog, setFileCatalog] = useState<ProviderCleanupItem[]>([])
+  const [catalogError, setCatalogError] = useState<string | null>(null)
   const [savedPending, setSavedPending] = useState(initialSession?.savedPending ?? false)
   const busyRef = useRef(busy)
   busyRef.current = busy
@@ -188,7 +185,13 @@ export function useManagedProviderWorkspace(
   const managementBaselineRef = useRef(managementBaseline)
   managementBaselineRef.current = managementBaseline
   const snapshot = managementBaseline?.snapshot ?? null
-  const files = managementBaseline?.files ?? []
+  const files = useMemo(() => {
+    const saved = managementBaseline?.files ?? []
+    return [...saved, ...fileDrafts.filter(draft => !saved.some(file => file.category === draft.category && file.fileName === draft.fileName)).map(draft => ({
+      category: draft.category, fileName: draft.fileName, referencePath: `./${draft.category === "proxy" ? "providers" : "ruleset"}/${draft.fileName}`,
+      source: "manual" as const, writable: true, sha256: "", size: new TextEncoder().encode(draft.content).length, updatedAt: "", filterSettings: null, extractionId: null,
+    }))]
+  }, [fileDrafts, managementBaseline])
   const savedHttpOwners = managementBaseline?.httpOwners ?? []
   const baselineControls = managementBaseline?.controls ?? {}
   const identityStatus = managementLifecycle.status
@@ -198,13 +201,12 @@ export function useManagedProviderWorkspace(
     // Only cache a coherent, accepted source and its saved bodies, never drafts.
     if (options.source || options.invalidSource) return
     if (identityStatus === "ready" && managementBaseline && runtimeSourceName === managementBaseline.snapshot.name && !parseDocument(managementBaseline.snapshot.content).errors.length) {
-      unifiedSession = { baseline: managementBaseline, activeIds, contents: savedContents, preferences, savedPending }
+      unifiedSession = { baseline: managementBaseline, activeIds, contents: savedContents, savedPending }
     } else if (identityStatus === "unavailable" || identityStatus === "error" || identityStatus === "stale" || (managementBaseline && parseDocument(managementBaseline.snapshot.content).errors.length)) {
       unifiedSession = null
     }
-  }, [options.source, options.invalidSource, identityStatus, managementBaseline, runtimeSourceName, activeIds, savedContents, preferences, savedPending])
+  }, [options.source, options.invalidSource, identityStatus, managementBaseline, runtimeSourceName, activeIds, savedContents, savedPending])
 
-  const readOnlyForItem = (item: ManagedProviderItem) => preferences.readOnly.includes(JSON.stringify([snapshot?.name, item.category, item.name]))
   const itemReader = managedCollectionItems
   const itemsByCategory = useMemo(() => {
     const itemsFor = (providerCategory: ProviderCategory) => {
@@ -220,6 +222,8 @@ export function useManagedProviderWorkspace(
     return { proxy: itemsFor("proxy"), rule: itemsFor("rule") }
   }, [files, httpOwners, itemReader, lastValidConfigContent, snapshot])
   const items = itemsByCategory[category]
+  const managementRows = useMemo(() => snapshot ? collectionFileRows(snapshot, lastValidConfigContent, files, httpOwners, category, fileDrafts, fileCatalog, cleanupFiles, savedPending) : [],
+    [snapshot, lastValidConfigContent, files, httpOwners, category, fileDrafts, fileCatalog, cleanupFiles, savedPending])
   const activeId = activeIds[category]
   const active = options.targetName
     ? items.find((item) => item.name === options.targetName) ?? null
@@ -238,7 +242,7 @@ export function useManagedProviderWorkspace(
     : false
   const declarationDirtyIds = Object.keys(declarationDrafts).filter((id) => {
     const item = [...itemsByCategory.proxy, ...itemsByCategory.rule].find((candidate) => candidate.id === id)
-    return item ? declarationDrafts[id] !== managedProviderDeclarationSnippet(item) : true
+    return JSON.stringify(declarationDrafts[id]) !== JSON.stringify(savedDeclarationDrafts[id] ?? (item ? managedDeclarationDraft(item) : undefined))
   })
   const contentDirtyIds = useMemo(
     () => new Set([...itemsByCategory.proxy, ...itemsByCategory.rule].filter((item) => {
@@ -250,7 +254,7 @@ export function useManagedProviderWorkspace(
   const declarationDirtyIdSet = useMemo(() => new Set(declarationDirtyIds), [declarationDirtyIds])
   const contentDraftDirty = Object.keys(contents).some((key) => contents[key] !== savedContents[key])
   const dirty = configDirty || pendingItemIds.size > 0 ||
-    contentDraftDirty || declarationDirtyIds.length > 0
+    contentDraftDirty || declarationDirtyIds.length > 0 || fileDrafts.length > 0 || cleanupFiles.length > 0
   dirtyRef.current = dirty
   const fileHasDraftRef = useRef<(item: ManagedProviderItem) => boolean>(() => true)
   fileHasDraftRef.current = (item) => managedProviderFileHasDraft(item, itemsByCategory[item.category],
@@ -295,7 +299,7 @@ export function useManagedProviderWorkspace(
     if (busy) return false
     const baseline = managementBaselineRef.current
     if (!baseline) return true
-    const reset = managedProviderDiscardState(baseline)
+    const reset = managedProviderDiscardState(baseline, savedDeclarationDrafts)
     configContentRef.current = reset.configContent
     lastValidConfigContentRef.current = reset.lastValidConfigContent
     contentsRef.current = reset.contents
@@ -312,8 +316,10 @@ export function useManagedProviderWorkspace(
     setDeclarationErrors(reset.declarationErrors)
     setConfigContentError(reset.configContentError)
     setPendingRemovals([])
+    setFileDrafts([])
+    setCleanupFiles([])
     return true
-  }, [baselineControls, busy, files, savedHttpOwners, snapshot])
+  }, [baselineControls, busy, files, savedHttpOwners, savedDeclarationDrafts, snapshot])
 
   const refresh = useCallback(async (committed = false, throwOnError = false) => {
     const activeRequests = requests.current
@@ -325,13 +331,14 @@ export function useManagedProviderWorkspace(
     setLoading(true)
     dispatchManagementLifecycle({ type: "start", requestKey })
     try {
-      const [nextFiles, runtimeState, nextPreferences] = await Promise.all([
+      const [nextFiles, runtimeState, catalog] = await Promise.all([
         listManagedProviderFiles(request.signal),
         readRuntimeLoadState(request.signal).catch(() => null),
-        readCollectionPreferences(request.signal),
+        Promise.all([previewProviderCleanup("proxy", request.signal), previewProviderCleanup("rule", request.signal)]).catch(() => null),
       ])
       if (!request.isCurrent()) return
-      setPreferences(nextPreferences)
+      setFileCatalog(catalog?.flatMap(result => result.files) ?? [])
+      setCatalogError(catalog ? null : "文件引用信息读取失败；重新读取后可继续核对删除影响")
       setRuntimeSourceName(confirmedRuntimeSource(runtimeState)?.name ?? null)
       const recent = confirmedRuntimeSource(runtimeState)
       setRuntimeSource(recent)
@@ -387,6 +394,8 @@ export function useManagedProviderWorkspace(
       })
       const adopt = (committed || (!dirtyRef.current && !inputDirtyRef.current)) && key !== null && key === requestKey && key === loadedKey
       if (!adopt) return
+      setFileDrafts([])
+      setCleanupFiles([])
       setHttpOwners(nextHttpOwners)
       configContentRef.current = nextSnapshot.content
       lastValidConfigContentRef.current = nextSnapshot.content
@@ -402,6 +411,7 @@ export function useManagedProviderWorkspace(
         contentErrorsRef.current = {}
         setContentErrors({})
         setDeclarationDrafts({})
+        setSavedDeclarationDrafts({})
         setDeclarationErrors({})
       }
     } catch (error) {
@@ -695,17 +705,25 @@ export function useManagedProviderWorkspace(
     finally { busyRef.current = false; if (request.finish()) setBusy(false) }
   }, [editContent, files, notify, writeDisabled])
 
-  const createDeclaredCollection = useCallback(async (input: ProxyCollectionInput, type: "inline" | "file" | "http", url: string, collectionCategory: ProviderCategory = category, fileName = suggestedCollectionFileName(input.name)) => {
+  const createDeclaredCollection = useCallback(async (input: CollectionDraftInput, type: "inline" | "file" | "http", url: string, collectionCategory: ProviderCategory = category, fileName = suggestedCollectionFileName(input.name)) => {
     if (!snapshot || writeDisabled || busyRef.current) return false
     busyRef.current = true; setBusy(true)
     try {
       let body = input.content || (collectionCategory === "proxy" ? "proxies: []\n" : "payload: []\n")
+      if (type === "file" && !collectionShouldReference(configContentRef.current, input, collectionCategory)) {
+        const name = collectionFileName(fileName)
+        if (files.some(file => file.category === collectionCategory && file.fileName.toLowerCase() === name.toLowerCase())) throw new Error("文件名已存在")
+        setFileDrafts(current => [...current, { category: collectionCategory, name: input.name, fileName: name, content: body, expectedSha256: null }])
+        contentsRef.current = { ...contentsRef.current, [collectionCategory + ":body:" + (collectionCategory === "proxy" ? "providers/" : "ruleset/") + name]: body }; setContents(contentsRef.current)
+        notify("文件已加入草稿，可从管理列表引用")
+        return true
+      }
       if (type === "file" && input.targetFileName) {
         const file = files.find((entry) => entry.category === collectionCategory && entry.referencePath === input.targetFileName && entry.writable)
         if (!file) throw new Error("所选集合文件已变化，请重新选择")
         body = (await readManagedProviderFile(collectionCategory, file.fileName)).content
       }
-      const path = type === "file" ? "./" + collectionFileName(fileName) : undefined
+      const path = type === "file" ? "./" + collectionFileName(fileName) : type === "http" ? "./" + (collectionCategory === "proxy" ? "providers/" : "ruleset/") + collectionFileName(fileName) : undefined
       if (path) assertCollectionPathAvailable(configContentRef.current, collectionCategory, path)
       const created = createCollectionDraft(configContentRef.current, input, type, url, collectionCategory, path)
       editConfigContent(created.content)
@@ -723,13 +741,14 @@ export function useManagedProviderWorkspace(
   }, [category, editConfigContent, files, notify, snapshot, writeDisabled])
 
 
-  const importCollections = useCallback(async (inputs: ProxyCollectionInput[], onSaved: (id: string, config: ConfigSnapshot) => void,
+  const importCollections = useCallback(async (inputs: CollectionDraftInput[], onSaved: (id: string, config: ConfigSnapshot) => void,
     expectedSource?: Pick<ConfigSnapshot, "name" | "sha256">, onError?: (id: string, message: string) => void) => {
     if (!snapshot || busyRef.current || writeDisabled) return false
     if (expectedSource && !collectionSourceMatches(snapshot, expectedSource)) { notify("配置版本已变化，上传草稿已保留", "error"); return false }
     let content = configContentRef.current
     const staged = { ...contentsRef.current }
     const uploadedBodies: Array<{ category: ProviderCategory; name: string; content: string }> = []
+    const detached: CollectionFileDraft[] = []
     const removedNames: Array<{ category: ProviderCategory; name: string }> = []
     let last: { category: ProviderCategory; name: string } | null = null
     busyRef.current = true; setBusy(true)
@@ -738,7 +757,7 @@ export function useManagedProviderWorkspace(
         const kind = input.category ?? "proxy"
         const existing = itemsByCategory[kind].find((item) => item.name === input.name)
         if (existing) {
-          if (!existing.writable || existing.declaration?.type !== "file" || readOnlyForItem(existing)) throw new Error("目标集合正文只读")
+          if (!managedProviderBodyWritable(existing) || existing.declaration?.type !== "file") throw new Error("目标集合正文只读")
           const declaration = input.snippet ? readUploadDeclaration(input.snippet, kind) : { name: existing.name, declaration: existing.declaration! }
           content = replaceCollectionUploadDeclaration(content, existing, declaration.name, declaration.declaration)
           if (declaration.name !== existing.name) removedNames.push({ category: kind, name: existing.name })
@@ -746,6 +765,12 @@ export function useManagedProviderWorkspace(
           last = { category: kind, name: declaration.name }
         } else {
           const declaration = input.snippet ? readUploadDeclaration(input.snippet, kind) : null
+          if (!collectionShouldReference(content, input, kind)) {
+            const fileName = collectionFileName(String(declaration?.declaration.path ?? input.name).split(/[\\/]/).at(-1)!)
+            if (files.some(file => file.category === kind && file.fileName.toLowerCase() === fileName.toLowerCase()) || detached.some(file => file.category === kind && file.fileName.toLowerCase() === fileName.toLowerCase())) throw new Error("文件名已存在")
+            detached.push({ category: kind, name: declaration?.name ?? input.name, fileName, content: input.content, expectedSha256: null })
+            continue
+          }
           const created = createCollectionDraft(content, { ...input, name: declaration?.name ?? input.name }, "file", "", kind,
             String(declaration?.declaration.path ?? "./" + input.name + ".yaml"), declaration?.declaration)
           content = created.content
@@ -761,6 +786,8 @@ export function useManagedProviderWorkspace(
       }
       await validateCollectionWorkspace(snapshot.name, { content, expectedSha256: snapshot.sha256, bodies: [], removals: [] })
       editConfigContent(content)
+      setFileDrafts(current => [...current, ...detached])
+      for (const file of detached) staged[file.category + ":body:" + (file.category === "proxy" ? "providers/" : "ruleset/") + file.fileName] = file.content
       setPendingRemovals((current) => [...current, ...removedNames])
       contentsRef.current = staged
       setContents(staged)
@@ -778,7 +805,7 @@ export function useManagedProviderWorkspace(
       notify(message, "error"); return false
     }
     finally { busyRef.current = false; setBusy(false) }
-  }, [editConfigContent, files, httpOwners, itemReader, itemsByCategory, notify, preferences.readOnly, snapshot, writeDisabled])
+  }, [editConfigContent, files, httpOwners, itemReader, itemsByCategory, notify, snapshot, writeDisabled])
 
   const validate = useCallback(async () => {
     if (!snapshot || busyRef.current || writeDisabled) return false
@@ -786,11 +813,11 @@ export function useManagedProviderWorkspace(
       .map((item) => ({ category: item.category, name: item.name, content: contentsRef.current[managedProviderContentKey(item)]!, expectedSha256: item.sha256 }))
     busyRef.current = true; setBusy(true)
     try {
-      await validateCollectionWorkspace(snapshot.name, { content: configContentRef.current, expectedSha256: snapshot.sha256, bodies, removals: [] })
+      await validateCollectionWorkspace(snapshot.name, { content: configContentRef.current, expectedSha256: snapshot.sha256, bodies, removals: [], fileDrafts })
       notify("YAML 校验通过"); return true
     } catch (error) { notify(providerError(error), "error"); return false }
     finally { busyRef.current = false; setBusy(false) }
-  }, [itemsByCategory, notify, snapshot, writeDisabled])
+  }, [fileDrafts, itemsByCategory, notify, snapshot, writeDisabled])
 
   const apply = useCallback(async (saveOnly = false) => {
     if (!snapshot || !canApply || busyRef.current || writeDisabled) return false
@@ -802,24 +829,38 @@ export function useManagedProviderWorkspace(
     const fragments: Array<{ item: ManagedProviderItem; snippet: string }> = []
     for (const item of allItems) {
       if (item.access === "inline" && contentErrorsRef.current[item.id]) fragments.push({ item, snippet: inlineProviderDraftText(item, currentContents[item.id] ?? item.content) })
-      if (declarationErrors[item.id] && declarationDrafts[item.id] !== undefined) fragments.push({ item, snippet: declarationDrafts[item.id]! })
+      if (declarationErrors[item.id] && declarationDrafts[item.id] !== undefined) fragments.push({ item, snippet: declarationDrafts[item.id]!.snippet })
     }
     if (fragments.length) sourceContent = replaceProviderDrafts(lastValidConfigContentRef.current, fragments)
-    const bodies = managedCollectionBodyDrafts(allItems, currentContents, savedContents, pendingRemovals)
+    const fileWrites = fileDrafts.map(draft => ({ ...draft, content: currentContents[draft.category + ":body:" + normalizedReference(files.find(file => file.category === draft.category && file.fileName === draft.fileName)?.referencePath)] ?? draft.content }))
+    for (const file of managementBaselineRef.current?.files ?? []) {
+      if (file.category === "unknown" || !file.writable) continue
+      const key = file.category + ":body:" + normalizedReference(file.referencePath)
+      if (currentContents[key] === undefined || currentContents[key] === savedContents[key] || allItems.some(item => item.category === file.category && item.fileName === file.fileName) || fileWrites.some(draft => draft.category === file.category && draft.fileName === file.fileName)) continue
+      fileWrites.push({ category: file.category, name: file.fileName, fileName: file.fileName, content: currentContents[key]!, expectedSha256: file.sha256 })
+    }
+    const bodies = managedCollectionBodyDrafts(allItems, currentContents, savedContents, pendingRemovals).filter(body => {
+      const item = allItems.find(item => item.category === body.category && item.name === body.name)
+      return !fileWrites.some(draft => draft.category === body.category && draft.fileName === item?.fileName)
+    })
     busyRef.current = true
     setBusy(true)
     let savedConfig: ConfigSnapshot | null = null
     try {
       await verifySource()
-      savedConfig = await saveCollectionWorkspace(snapshot.name, { content: sourceContent, expectedSha256: snapshot.sha256, bodies, removals: pendingRemovals, httpProviders: httpOwners.filter((owner) => owner.writable !== false).map(({ category, name }) => ({ category, name })) })
+      savedConfig = await saveCollectionWorkspace(snapshot.name, { content: sourceContent, expectedSha256: snapshot.sha256, bodies, removals: pendingRemovals, fileDrafts: fileWrites, cleanupFiles, httpProviders: httpOwners.filter((owner) => owner.writable !== false).map(({ category, name }) => ({ category, name })) })
       acceptSourceCommit(savedConfig)
       setPendingRemovals([])
+      setFileDrafts([])
+      setCleanupFiles([])
       setSavedPending(true)
-      const nextFiles = await listManagedProviderFiles()
+      const [nextFiles, nextCatalog] = await Promise.all([listManagedProviderFiles(), Promise.all([previewProviderCleanup("proxy"), previewProviderCleanup("rule")]).catch(() => null)])
+      setFileCatalog(nextCatalog?.flatMap(result => result.files) ?? [])
+      setCatalogError(nextCatalog ? null : "文件引用信息读取失败；重新读取后可继续核对删除影响")
       const validSource = !parseDocument(savedConfig.content).errors.length
       const nextBaseline = validSource
         ? { snapshot: savedConfig, files: nextFiles, ...reconcileManagedProviderDraft(savedConfig, nextFiles, httpOwners, itemReader) }
-        : { snapshot: savedConfig, files: nextFiles, httpOwners, controls }
+        : { snapshot: savedConfig, files: nextFiles, httpOwners, controls, lastValidContent: lastValidConfigContentRef.current }
       dispatchManagementLifecycle({ type: "own-commit", baseline: nextBaseline })
       managementBaselineRef.current = nextBaseline
       setHttpOwners(nextBaseline.httpOwners)
@@ -846,8 +887,8 @@ export function useManagedProviderWorkspace(
       const savedErrors = Object.fromEntries(Object.entries(savedBodies).map(([key, body]) => [key, parseDocument(body).errors.length ? "集合 YAML 格式错误；草稿已保存，修正后应用" : null]))
       contentErrorsRef.current = savedErrors
       setContentErrors(savedErrors)
-      setDeclarationDrafts({})
-      setDeclarationErrors({})
+      if (validSource) { setDeclarationDrafts({}); setSavedDeclarationDrafts({}); setDeclarationErrors({}) }
+      else setSavedDeclarationDrafts({ ...declarationDrafts })
       if (saveOnly) { notify("配置及集合草稿已保存，待应用"); return true }
       const applied = await applyRuntimeConfig(savedConfig)
       setSavedPending(false)
@@ -863,166 +904,115 @@ export function useManagedProviderWorkspace(
       notify(failure, "error")
       return false
     } finally { busyRef.current = false; setBusy(false) }
-  }, [acceptSourceCommit, canApply, category, controls, declarationDrafts, declarationErrors, httpOwners, itemReader, itemsByCategory, notify, pendingRemovals, refresh, savedContents, savedHttpOwners, snapshot, verifySource, writeDisabled])
+  }, [acceptSourceCommit, canApply, category, cleanupFiles, fileDrafts, files, controls, declarationDrafts, declarationErrors, httpOwners, itemReader, itemsByCategory, notify, pendingRemovals, refresh, savedContents, savedHttpOwners, snapshot, verifySource, writeDisabled])
 
-  const remove = useCallback(async (target: ManagedProviderItem | null = active) => {
-    if (!target || busyRef.current || inputDirtyRef.current || writeDisabled) return false
-    const ownedSource = target.access === "local" || target.access === "subscription"
-    const reason = managedProviderModificationReason(target)
-    if (reason) { notify(reason, "error"); return false }
-    busyRef.current = true
-    setBusy(true)
-    try {
-      await verifySource()
-      if (target.access === "http" || target.access === "inline" || (target.declared && (target.access === "manual" || target.access === "external"))) {
-        const candidate = deleteManagedProviderConfig(configContentRef.current, target)
-        editConfigContent(candidate)
-        setPendingRemovals((current) => [...current.filter((item) => item.category !== target.category || item.name !== target.name), { category: target.category, name: target.name }])
-        setHttpOwners((current) => current.filter((owner) => owner.category !== target.category || owner.name !== target.name))
-        notify("集合已从配置草稿移除，请保存并应用")
-        return { applied: null } satisfies ManagedProviderRemovalResult
-      }
-      if (ownedSource) {
-        if (dirtyRef.current) throw new Error("请先保存当前配置草稿，再删除自动提取关系")
-        if (!snapshot || !target.fileName || !target.sha256 || !target.ownerId) return false
-        const source = target.access as "local" | "subscription"
-        const candidate = target.declared
-          ? deleteManagedProviderConfig(snapshot.content, target)
-          : snapshot.content
-        const fresh = await readConfigFile(snapshot.name)
-        if (fresh.sha256 !== snapshot.sha256) throw new ConfigError("configuration changed", 409, "config_conflict")
-        const result = await deleteManagedProviderSource(target.fileName, {
-          source,
-          ownerId: target.ownerId,
-          expectedSha256: target.sha256,
-          configName: snapshot.name,
-          configContent: candidate,
-          expectedConfigSha256: fresh.sha256,
-        })
-        acceptSourceCommit(result.config)
-        const successMessage = target.access === "local"
-          ? "本地提取关系与生成文件已删除，源配置已保留"
-          : "订阅已保留，Provider 提取已关闭并删除生成文件"
-        setSavedPending(true)
-        await refresh(true)
-        notify(`${successMessage}；尚未应用到 Core`)
-        return { applied: null } satisfies ManagedProviderRemovalResult
-      }
-      if (!target.fileName || !target.sha256) return false
-      const removalResult: ManagedProviderRemovalResult = { applied: null }
-      if (target.declared && snapshot) {
-        const candidate = deleteManagedProviderConfig(snapshot.content, target)
-        const fresh = await readConfigFile(snapshot.name)
-        if (fresh.sha256 !== snapshot.sha256) throw new ConfigError("configuration changed", 409, "config_conflict")
-        const result = await deleteManagedProviderWithConfig(target.category, target.fileName, {
-          expectedSha256: target.sha256,
-          configName: snapshot.name,
-          configContent: candidate,
-          expectedConfigSha256: fresh.sha256,
-        })
-        acceptSourceCommit(result.config)
-        setSavedPending(true)
-        await refresh(true)
-        notify("集合文件和配置引用已删除，尚未应用到 Core")
-        return { applied: null } satisfies ManagedProviderRemovalResult
-      } else {
-        await deleteManagedProviderFile(target.category, target.fileName, target.sha256)
-        notify("Provider 文件已删除")
-      }
-      await refresh(true)
-      return removalResult
-    } catch (error) {
-      notify(providerError(error), "error")
-      return false
-    } finally {
-      busyRef.current = false
-      setBusy(false)
-    }
-  }, [active, editConfigContent, itemOperationPending, notify, refresh, snapshot, verifySource, writeDisabled])
-
-  const setReadOnly = useCallback(async (item: ManagedProviderItem, readOnly: boolean) => {
-    if (!snapshot || writeDisabled) return
-    setBusy(true)
-    try {
-      await verifySource()
-      setPreferences(await saveCollectionReadOnly({ configName: snapshot.name, category: item.category,
-        name: item.name, readOnly, expectedVersion: preferences.version }))
-    } catch (error) { notify(providerError(error), "error") }
-    finally { setBusy(false) }
-  }, [notify, preferences.version, snapshot, verifySource, writeDisabled])
-
-  const saveSettings = useCallback(async (item: ManagedProviderItem, source: Pick<ConfigSnapshot, "name" | "sha256">, draft: { snippet: string; loaded: boolean; selectedGroups: string[] }, onSourceSaved?: (source: Pick<ConfigSnapshot, "name" | "sha256">) => void) => {
+  const saveSettings = useCallback(async (item: ManagedProviderItem, source: Pick<ConfigSnapshot, "name" | "sha256">, draft: { snippet: string; loaded: boolean; selectedGroups: string[]; newGroupNames?: string[] }) => {
     if (!snapshot || writeDisabled || busyRef.current) return false
-    let savedDrafts = false
-    busyRef.current = true; setBusy(true)
     try {
       if (!managedConfigIdentity(snapshot, source.name, source.sha256)) throw new ConfigError("configuration changed", 409, "config_conflict")
-      await verifySource()
-      if (item.declaration?.type === "file" && item.writable && ["manual", "external"].includes(item.access) && item.fileIssue === "missing" && !item.sha256) {
-        const staged = stageCollectionSettings(configContentRef.current, item, draft)
-        const next = itemReader({ ...snapshot, content: staged.content }, files, item.category, httpOwners).find((entry) => entry.name === staged.name && entry.declared)
-        if (next?.sha256) throw new Error("该文件名已存在，请更换文件名")
-        const oldKey = managedProviderContentKey(item)
-        const nextContents = { ...contentsRef.current }
-        const nextErrors = { ...contentErrorsRef.current }
-        if (next && nextContents[oldKey] !== undefined) {
-          const key = managedProviderContentKey(next)
-          const body = nextContents[oldKey]!
-          const error = nextErrors[oldKey] ?? null
-          delete nextContents[oldKey]; delete nextErrors[oldKey]
-          nextContents[key] = body; nextErrors[key] = error
-        } else if (!draft.loaded) { delete nextContents[oldKey]; delete nextErrors[oldKey] }
-        editConfigContent(staged.content)
-        contentsRef.current = nextContents; setContents(nextContents)
-        contentErrorsRef.current = nextErrors; setContentErrors(nextErrors)
-        setActiveIds((current) => ({ ...current, [item.category]: staged.name }))
-        if (explicitSource.current && next) onSourceChange.current?.(explicitSource.current, { category: item.category, name: staged.name })
-        notify("集合设置已加入草稿，正文已保留")
-        return true
-      }
-      if (dirtyRef.current) {
-        busyRef.current = false
-        if (!await apply(true)) return false
-        savedDrafts = true
-        onSourceSaved?.(managementBaselineRef.current!.snapshot)
-      }
-      busyRef.current = true; setBusy(true)
-      const baseline = managementBaselineRef.current!
-      const currentSource = baseline.snapshot
-      const fresh = await readConfigFile(currentSource.name)
-      if (!collectionSourceMatches(fresh, currentSource)) throw new ConfigError("configuration changed", 409, "config_conflict")
-      const currentItem = itemReader(currentSource, baseline.files, item.category, baseline.httpOwners).find((entry) => entry.name === item.name)
-      if (!currentItem) throw new Error("集合已变化，输入已保留，请重新打开设置")
       if (parseDocument(draft.snippet).errors.length) {
-        const content = replaceProviderDraftText(currentSource.content, currentItem, draft.snippet)
-        const saved = await saveConfigFile(currentSource.name, content, currentSource.sha256)
-        acceptSourceCommit(saved)
-        dispatchManagementLifecycle({ type: "own-commit", baseline: { ...baseline, snapshot: saved } })
-        configContentRef.current = saved.content
-        setConfigContent(saved.content)
-        setConfigContentError("集合声明已保存，YAML 尚未完成；集合列表沿用最近可解析声明，请在配置中心继续编辑")
-        setSavedPending(true)
-        notify("配置已保存，待修正后应用")
+        setDeclarationDrafts(current => ({ ...current, [item.id]: managedDeclarationDraft(item, draft) }))
+        setDeclarationErrors(current => ({ ...current, [item.id]: "集合声明 YAML 尚未完成；可保存草稿，修正后应用" }))
+        notify("集合声明已加入草稿，保留 YAML 诊断")
         return true
       }
-      const result = await saveCollectionSettings({ configName: currentSource.name, expectedConfigSha256: currentSource.sha256,
-        category: item.category, name: item.name, ...draft, expectedFileSha256: currentItem.sha256 ?? undefined })
-      acceptSourceCommit(result.config, { category: item.category, name: result.name })
-      setActiveIds((current) => ({ ...current, [item.category]: result.name }))
-      await refresh(true)
-      setSavedPending(true)
-      notify(["集合设置已保存，等待应用", retainedProviderMessage(result.retainedSource)].filter(Boolean).join("；"))
+      const sourceContent = declarationDrafts[item.id] !== undefined && parseDocument(configContentRef.current).errors.length ? lastValidConfigContentRef.current : configContentRef.current
+      const staged = stageCollectionSettings(sourceContent, item, draft)
+      if (item.declaration?.path !== staged.declaration.path) throw new Error("请在管理集合中修改文件名")
+      const nextItem = itemReader({ ...snapshot, content: staged.content }, files, item.category, httpOwners).find(entry => entry.name === staged.name && entry.declared)
+      const oldKey = managedProviderContentKey(item)
+      if (nextItem && contentsRef.current[oldKey] !== undefined) {
+        const nextContents = { ...contentsRef.current }
+        delete nextContents[oldKey]
+        nextContents[managedProviderContentKey(nextItem)] = item.access === "inline" ? nextItem.content : contentsRef.current[oldKey]!
+        contentsRef.current = nextContents; setContents(nextContents)
+      }
+      editConfigContent(staged.content)
+      setDeclarationDrafts(current => { const next = { ...current }; delete next[item.id]; return next })
+      setDeclarationErrors(current => { const next = { ...current }; delete next[item.id]; return next })
+      setActiveIds(current => ({ ...current, [item.category]: staged.name }))
+      if (explicitSource.current && nextItem) onSourceChange.current?.(explicitSource.current, { category: item.category, name: staged.name })
+      notify("集合设置已加入草稿，统一保存或应用配置")
       return true
-    } catch (error) {
-      const conflict = error instanceof ConfigError && error.status === 409
-      const detail = conflict ? `${providerError(error)}；输入已保留，请取消后重新读取并打开设置` : providerError(error)
-      const message = (savedDrafts ? "原配置及正文草稿已保存；集合设置尚未保存。" : "") + detail
-      if (conflict) dispatchManagementLifecycle({ type: "external-conflict", message })
-      notify(message, "error")
-      return false
-    }
+    } catch (error) { notify(providerError(error), "error"); return false }
+  }, [declarationDrafts, editConfigContent, files, httpOwners, itemReader, notify, snapshot, writeDisabled])
+
+  const referenceFile = useCallback((row: CollectionFileRow, input: CollectionDraftInput) => {
+    if (!snapshot || writeDisabled || busyRef.current) return false
+    try {
+      const item = row.item
+      if (row.deleting) throw new Error("该文件已加入删除草稿")
+      const type = item.access === "http" ? "http" : item.access === "inline" ? "inline" : "file"
+      const created = createCollectionDraft(configContentRef.current, input, type, String(item.declaration?.url ?? ""), item.category, row.referencePath ?? undefined,
+        type === "file" ? { type: "file", path: row.referencePath, ...(item.category === "rule" ? { behavior: input.behavior ?? "classical", format: "yaml" } : {}) } : undefined)
+      editConfigContent(created.content)
+      setPendingRemovals(current => current.filter(entry => entry.category !== item.category || entry.name !== created.name))
+      if (type === "http") setHttpOwners(current => [...current.filter(owner => owner.category !== item.category || owner.name !== created.name), { configName: snapshot.name, category: item.category, name: created.name, declaration: created.declaration, writable: item.writable }])
+      notify("引用已加入当前配置草稿")
+      return true
+    } catch (error) { notify(providerError(error), "error"); return false }
+  }, [editConfigContent, notify, snapshot, writeDisabled])
+
+  const unreferenceFile = useCallback((row: CollectionFileRow) => {
+    if (writeDisabled || busyRef.current) return false
+    try {
+      let content = configContentRef.current
+      if (!row.fileName && row.item.declaration?.type === "file" && !row.item.sha256) {
+        const fileName = collectionFileName(String(row.item.declaration.path).split(/[\\/]/).at(-1)!)
+        if (files.some(file => file.category === row.item.category && file.fileName.toLowerCase() === fileName.toLowerCase())) throw new Error("文件名已存在，请先保存集合再取消引用")
+        const body = contentsRef.current[managedProviderContentKey(row.item)] ?? ""
+        setFileDrafts(current => [...current, { category: row.item.category, name: row.item.name, fileName, content: body, expectedSha256: null }])
+      }
+      for (const item of row.bindings) content = deleteManagedProviderConfig(content, item)
+      editConfigContent(content)
+      notify("已取消当前配置引用，文件保留；请保存配置")
+      return true
+    } catch (error) { notify(providerError(error), "error"); return false }
+  }, [editConfigContent, files, notify, writeDisabled])
+
+  const renameFile = useCallback(async (row: CollectionFileRow, name: string) => {
+    if (!snapshot || writeDisabled || busyRef.current) return false
+    const item = row.item
+    if (!managedProviderBodyWritable(item) || !row.fileName) return false
+    busyRef.current = true; setBusy(true)
+    try {
+      const next = renamedCollectionFile(row, name)
+      if (next.fileName === row.fileName) return true
+      if (files.some(file => file.category === item.category && file.fileName.toLowerCase() === next.fileName.toLowerCase())) throw new Error("文件名已存在")
+      const draft = fileDrafts.find(entry => entry.category === item.category && entry.fileName === row.fileName)
+      const original = draft ? null : await readManagedProviderFile(item.category, row.fileName)
+      if (original && (!original.writable || original.sha256 !== item.sha256)) throw new Error("文件已变化，请重新读取后修改")
+      const body = contentsRef.current[managedProviderContentKey(item)] ?? draft?.content ?? original!.content
+      const renameFrom = draft?.renameFrom ?? (original ? { fileName: original.fileName, expectedSha256: original.sha256 } : undefined)
+      const staged: CollectionFileDraft = { category: item.category, name: item.name, fileName: next.fileName, content: body, expectedSha256: null, ...(renameFrom ? { renameFrom } : {}) }
+      const content = replaceCollectionFilePath(configContentRef.current, row.bindings, next.referencePath)
+      setFileDrafts(current => [...current.filter(entry => entry !== draft), staged])
+      const nextContents = { ...contentsRef.current }
+      delete nextContents[managedProviderContentKey(item)]
+      nextContents[item.category + ":body:" + normalizedReference(next.referencePath)] = body
+      contentsRef.current = nextContents; setContents(nextContents)
+      editConfigContent(content)
+      notify("文件名已加入草稿，正文保留；原文件按配置及运行依赖保留")
+      return true
+    } catch (error) { notify(providerError(error), "error"); return false }
     finally { busyRef.current = false; setBusy(false) }
-  }, [acceptSourceCommit, apply, editConfigContent, files, httpOwners, itemReader, notify, refresh, snapshot, verifySource, writeDisabled])
+  }, [editConfigContent, fileDrafts, files, notify, snapshot, writeDisabled])
+
+  const removeFiles = useCallback((rows: CollectionFileRow[]) => {
+    if (writeDisabled || busyRef.current) return false
+    try {
+      let content = configContentRef.current
+      for (const row of rows) for (const item of row.bindings) content = deleteManagedProviderConfig(content, item)
+      editConfigContent(content)
+      const selected = rows.flatMap(row => row.cleanup ? [row.cleanup] : [])
+      setCleanupFiles(current => [...current, ...selected.filter(entry => !current.some(old => old.category === entry.category && old.fileName === entry.fileName))])
+      setPendingRemovals(current => [...current, ...rows.flatMap(row => row.bindings.map(item => ({ category: item.category, name: item.name })))])
+      setFileDrafts(current => current.filter(draft => !rows.some(row => row.item.category === draft.category && row.fileName === draft.fileName)))
+      setHttpOwners(current => current.filter(owner => !rows.some(row => row.item.category === owner.category && row.item.name === owner.name)))
+      notify("删除已加入草稿；成功应用后按来源和引用约束清理文件")
+      return true
+    } catch (error) { notify(providerError(error), "error"); return false }
+  }, [editConfigContent, notify, writeDisabled])
 
   const recoverPath = useCallback(async (item: ManagedProviderItem, action: "rename" | "restore") => {
     const change = snapshot?.collectionPathChanges?.find((entry) => entry.category === item.category && entry.name === item.name)
@@ -1050,8 +1040,9 @@ export function useManagedProviderWorkspace(
 
   return {
     files,
-    readOnlyFor: (item: ManagedProviderItem) => preferences.readOnly.includes(JSON.stringify([snapshot?.name, item.category, item.name])),
-    setReadOnly,
+    managementRows, catalogError, fileCatalog, referenceFile, unreferenceFile, renameFile, removeFiles,
+    settingsDraft: (item: ManagedProviderItem) => managedDeclarationDraft(item, declarationDrafts[item.id]),
+    settingsContent: lastValidConfigContent,
     saveSettings,
     runtimeSource,
     hasExplicitTarget: Boolean(options.source || options.invalidSource),
@@ -1097,7 +1088,6 @@ export function useManagedProviderWorkspace(
     refresh,
     createDeclaredCollection,
     apply,
-    remove,
     editContent,
     uploadContent,
     useExistingContent,

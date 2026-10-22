@@ -1,7 +1,6 @@
 import { providerFileIssueLabel } from "../../shared/configMessages.ts";
-import { useEffect, useMemo, useRef, useState } from "react"
-import { useNavigate } from "react-router"
-import { ArrowLeft, Boxes, ListTree, ShieldCheck, Plus, RefreshCw, Save, Settings2, Trash2, Upload } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { ArrowLeft, Boxes, ListTree, ShieldCheck, FolderOpen, RefreshCw, Save, Settings2 } from "lucide-react"
 import {
   type ConfigSnapshot,
 } from "@/api/configClient";
@@ -9,21 +8,22 @@ import { WorkspaceCategoryTabs, WorkspaceToolbar } from "@/components/patterns/w
 import { CollectionBodyWorkspace } from "./CollectionBodyWorkspace"
 import { ResourceWorkspace } from "@/components/patterns/resource-workspace"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Badge } from "@/components/ui/badge"
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 import { Spinner } from "@/components/ui/spinner"
 import type { Notify } from "@/shared/types"
-import { collectionEditLocation, configEditLocation, type CollectionTarget } from "@/shared/collectionTarget"
+import type { CollectionTarget, CollectionWorkspaceNavigation } from "@/shared/collectionTarget"
 import { useUiState } from "@/app/state/uiState"
 import { CollectionResourceList } from "./CollectionResourceList"
 import { CollectionActionsMenu } from "./CollectionActionsMenu"
-import { CollectionCategoryPicker, CollectionDetailHeader } from "./CollectionMobileNavigation"
+import { CollectionCategoryPicker } from "./CollectionMobileNavigation"
 import { CollectionSettingsDialog } from "./CollectionSettingsDialog"
-import { ProxyCollectionImportDialog } from "./ProxyCollectionImport.tsx"
-import { groupsEmptiedByRemoval } from "./managedProviderYaml"
-import { managedProviderModificationReason, type ManagedProviderItem } from "./managedProviderModel"
+import { CollectionCreateWorkspace } from "./ProxyCollectionImport.tsx"
+import { managedProviderBodyWritable, type ManagedProviderItem } from "./managedProviderModel"
+import { cn } from "@/lib/utils"
+import { CollectionFileManager } from "./CollectionFileManager"
+import { collectionSourceLabel } from "./collectionFileManagement"
 import { CollectionCleanupDialog } from "./CollectionCleanupDialog"
 import { providerActionKey, providerItemCount, type ProviderCategory, type ProviderPayload } from "./collectionViewModel"
 import type { useManagedProviderWorkspace } from "./useManagedProviderWorkspace"
@@ -32,21 +32,27 @@ import type { useProviderCollections } from "./useProviderCollections"
 type Workspace = ReturnType<typeof useManagedProviderWorkspace>
 type Runtime = ReturnType<typeof useProviderCollections>
 
-export function ManagedCollectionWorkspace({ category, workspace, runtime, notify, inputDirty, onInputDirtyChange, onRefresh, onApplied, target, onCategoryChange }: {
+export function ManagedCollectionWorkspace({ category, workspace, runtime, notify, inputDirty, onInputDirtyChange, onRefresh, onApplied, target, navigation, discardInputVersion, onCategoryChange, onSelectCollection, onOpenManagement, onBack, onReturnConfig, onEndTarget }: {
   category: ProviderCategory; workspace: Workspace; runtime: Runtime; notify: Notify
   inputDirty: boolean; onInputDirtyChange: (dirty: boolean) => void; onRefresh: () => Promise<void>
   onApplied: () => Promise<void>
   target: CollectionTarget
+  navigation: CollectionWorkspaceNavigation
+  discardInputVersion: number
   onCategoryChange: (category: ProviderCategory) => boolean
+  onSelectCollection: (name: string, open: boolean) => void
+  onOpenManagement: () => void
+  onBack: () => void
+  onReturnConfig: () => void
+  onEndTarget: () => void
 }) {
-  const navigate = useNavigate()
   const { askConfirm } = useUiState()
-  const focusedTarget = useRef("")
   const [importMode, setImportMode] = useState<"new" | "upload" | null>(null)
   const [settingsTarget, setSettingsTarget] = useState<{ item: ManagedProviderItem; source: Pick<ConfigSnapshot, "name" | "sha256"> } | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<ManagedProviderItem | null>(null)
+  const view = navigation.view === "manage" ? "manage" : "collections"
   const [cleanupOpen, setCleanupOpen] = useState(false)
-  const [mobileEditing, setMobileEditing] = useState(false)
+  const mobileEditing = navigation.view === "editor"
+  useEffect(() => { setImportMode(null); setSettingsTarget(null); setCleanupOpen(false) }, [discardInputVersion])
   const [filePickerId, setFilePickerId] = useState<string | null>(null)
   const items = workspace.items
   useEffect(() => {
@@ -59,16 +65,15 @@ export function ManagedCollectionWorkspace({ category, workspace, runtime, notif
   const activeName = active?.name ?? (target.category === category ? target.name : null) ?? runtimeName ?? Object.keys(providers)[0]
   const running = activeName ? providers[activeName] : undefined
   const runtimeBusy = Boolean(activeName && runtime.actions.has(providerActionKey(category, activeName)))
-  const ordinary = Boolean(active && (active.access === "inline" || (active.access !== "http" && active.writable)))
-  const readOnly = Boolean(active && workspace.readOnlyFor(active))
-  const editable = ordinary && !readOnly && !workspace.writeDisabled
+  const ordinary = Boolean(active && managedProviderBodyWritable(active))
+  const editable = ordinary && !workspace.writeDisabled
   const entries = useMemo<Array<[string, ProviderPayload]>>(() => workspace.snapshot
     ? items.map((item) => [item.name, providers[item.name] ?? { vehicleType: item.declaration?.type ?? "file" }])
     : Object.entries(providers), [items, providers, workspace.snapshot])
-  const writableNames = new Set(items.filter((item) => item.access !== "http" && item.writable && !workspace.readOnlyFor(item)).map((item) => item.name))
+  const writableNames = new Set(items.filter(managedProviderBodyWritable).map((item) => item.name))
   const mergedNames = new Set(items.filter((item) => item.access === "local").map((item) => item.name))
   const descriptions = Object.fromEntries(items.map(item => [item.name, `${item.access === "inline" ? "Inline" : item.access === "http" ? "HTTP" : "File"} · ${typeof item.declaration?.path === "string" ? item.declaration.path : item.referencePath ?? item.name}`]))
-  const ordinaryFileStatus = (item: ManagedProviderItem, status: string) => (item.access === "http" || !item.writable || workspace.readOnlyFor(item)) && !item.fileIssue ? "只读" : status
+  const ordinaryFileStatus = (item: ManagedProviderItem, status: string) => !managedProviderBodyWritable(item) && !item.fileIssue ? "只读" : status
   const statuses = Object.fromEntries(items.map((item) => {
     const provider = providers[item.name]
     const status = item.pendingRemoval ? "待移除" : workspace.itemOperationPending(item) ? "未保存" : item.fileIssue ? providerFileIssueLabel(item.fileIssue) : runtimeBlocked ? "待应用" : !provider ? "待应用" : `运行 ${providerItemCount(category, provider)} ${category === "proxy" ? "个节点" : "条规则"}`
@@ -77,28 +82,12 @@ export function ManagedCollectionWorkspace({ category, workspace, runtime, notif
   useEffect(() => {
     if (active && !active.fileIssue) void workspace.select(active)
   }, [active, workspace.select])
-  useEffect(() => { setMobileEditing(false) }, [category])
-  useEffect(() => {
-    if (!target.name || target.category !== category || workspace.identityStatus !== "ready") return
-    const key = `${target.source?.name}:${category}:${target.name}`
-    if (focusedTarget.current === key) return
-    const item = items.find((item) => item.name === target.name)
-    if (!item) return
-    focusedTarget.current = key
-    void workspace.select(item)
-    setMobileEditing(true)
-  }, [category, items, target.name, target.category, target.repair, target.source?.name, workspace.identityStatus, workspace.select])
   const select = (name: string, open = false) => {
-    if (inputDirty) { notify("请先保存或取消集合输入", "error"); return }
+    if (inputDirty || workspace.busy) { notify("请先确认或取消集合输入，并等待当前操作完成", "error"); return }
     const item = items.find((item) => item.name === name)
     if (item) void workspace.select(item)
-    if (item && target.source && workspace.snapshot) {
-      focusedTarget.current = [workspace.snapshot.name, category, item.name].join(":")
-      const destination = collectionEditLocation(workspace.snapshot, { category, name: item.name })
-      navigate(destination.pathname, { state: destination.state, replace: true })
-    }
     if (!runtimeBlocked) runtime.selectProvider(category, name)
-    if (open) setMobileEditing(true)
+    onSelectCollection(name, open)
   }
   const list = (mobile = false) => <CollectionResourceList category={category} entries={entries} activeName={activeName}
     loading={workspace.loading} error={!workspace.snapshot ? workspace.message : undefined}
@@ -126,91 +115,67 @@ export function ManagedCollectionWorkspace({ category, workspace, runtime, notif
   const validate = () => workspace.validate()
   const inputBlocked = workspace.writeDisabled || inputDirty || Boolean(workspace.configContentError)
   const cleanupBlocked = workspace.busy || workspace.loading || workspace.dirty || inputDirty
-  const emptiedGroups = useMemo(() => {
-    try { return deleteTarget ? groupsEmptiedByRemoval(workspace.configContent, deleteTarget) : [] }
-    catch { return [] } // The mutation reports an invalid YAML candidate before any write.
-  }, [deleteTarget, workspace.configContent])
   const pathChange = active && workspace.snapshot?.collectionPathChanges?.find((change) => change.category === active.category && change.name === active.name)
   const openSettings = () => {
     if (active && workspace.snapshot) setSettingsTarget({ item: structuredClone(active), source: { name: workspace.snapshot.name, sha256: workspace.snapshot.sha256 } })
   }
-  const removeReason = !active ? "未选择集合" : workspace.writeDisabled ? workspace.message
-    : inputDirty ? "请先完成当前输入" : managedProviderModificationReason(active)
   const discard = async () => {
     if (await askConfirm({ title: "放弃全部草稿？", message: "恢复当前源配置及全部集合的已保存内容。", confirmLabel: "放弃全部草稿", cancelLabel: "继续编辑", danger: true })) workspace.discardDrafts()
   }
-  const fileEditable = Boolean(active && ordinary && !readOnly && active.declaration?.type === "file")
+  const fileEditable = Boolean(active && ordinary && active.declaration?.type === "file")
   const missingFile = Boolean(fileEditable && active?.fileIssue === "missing" && !active.sha256)
   const pickingFile = Boolean(missingFile && (filePickerId === active?.id || !workspace.contentReady))
   const fileBack = missingFile && !pickingFile && <Button variant="outline" size="lg" aria-label="返回文件选择" title="返回文件选择，保留草稿" disabled={workspace.busy} onClick={() => active && setFilePickerId(active.id)}><ArrowLeft data-icon="inline-start" /><span className="hidden md:inline">返回</span></Button>
-  const createAction = { label: "新建", icon: Plus, disabled: inputBlocked, onSelect: () => setImportMode("new") }
-  const importActions = [
-    { label: "上传", icon: Upload, disabled: inputBlocked, onSelect: () => setImportMode("upload") },
-    { label: "清理文件", icon: Trash2, disabled: cleanupBlocked, onSelect: () => setCleanupOpen(true) },
-  ]
-  const moreMenu = <CollectionActionsMenu description={removeReason ?? undefined} groups={[
+  const moreMenu = <CollectionActionsMenu groups={[
     [
-      { ...createAction, visibility: "mobile" },
-      ...importActions,
+      { label: "重新读取文件", icon: RefreshCw, disabled: workspace.loading || workspace.dirty || inputDirty, onSelect: () => active && void workspace.refreshItem(active) },
+      { label: "Core 更新当前", icon: RefreshCw, disabled: !running || runtimeBusy, onSelect: () => void update() },
+      { label: "Core 更新全部", icon: RefreshCw, disabled: Boolean(runtime.batchProgress) || !Object.keys(providers).length, onSelect: () => void updateAll() },
     ],
     [
-      { label: "设置", icon: Settings2, visibility: "mobile", disabled: !active?.declared || inputBlocked, onSelect: openSettings },
-      ...(missingFile && !pickingFile ? [{ label: "返回文件选择", icon: ArrowLeft, visibility: "mobile" as const, disabled: workspace.busy, onSelect: () => active && setFilePickerId(active.id) }] : []),
       ...(pathChange ? [
         { label: "同步重命名", disabled: inputBlocked, onSelect: () => active && void workspace.recoverPath(active, "rename") },
         { label: "恢复原路径", disabled: inputBlocked, onSelect: () => active && void workspace.recoverPath(active, "restore") },
       ] : []),
-    ],
-    [
-      { label: "重新读取", icon: RefreshCw, visibility: "desktop", disabled: workspace.loading, onSelect: () => void onRefresh() },
-      { label: "更新当前", icon: RefreshCw, disabled: !running || runtimeBusy, onSelect: () => void update() },
-      { label: "全部更新", icon: RefreshCw, disabled: Boolean(runtime.batchProgress) || !Object.keys(providers).length, onSelect: () => void updateAll() },
-    ],
-    [
-      ...(ordinary && active ? [{ label: "只读", visibility: "mobile" as const, checked: readOnly, disabled: workspace.writeDisabled || workspace.contentDirty, onSelect: () => void workspace.setReadOnly(active, !readOnly) }] : []),
       ...(workspace.dirty ? [{ label: "放弃全部草稿", disabled: workspace.busy || inputDirty, destructive: true, onSelect: () => void discard() }] : []),
       ...(target.source ? [
-        { label: "返回编辑配置", disabled: workspace.busy || inputDirty, onSelect: () => { const destination = configEditLocation(workspace.snapshot ?? target.source!); navigate(destination.pathname, { state: destination.state }) } },
-        { label: "结束编辑目标", disabled: workspace.busy || inputDirty, onSelect: () => navigate("/collections") },
+        { label: "返回编辑配置", disabled: workspace.busy || inputDirty, onSelect: onReturnConfig },
+        { label: "结束编辑目标", disabled: workspace.busy || inputDirty, onSelect: onEndTarget },
       ] : []),
-      { label: "删除集合", icon: Trash2, destructive: true, disabled: removeReason !== null, onSelect: () => setDeleteTarget(active) },
     ],
   ]} />
-  const toolbar = <>
-    <CollectionDetailHeader title={activeName ?? "集合管理"} onBack={() => setMobileEditing(false)} disabled={workspace.busy || inputDirty} />
-    <WorkspaceToolbar variant="resource-editor" className="max-md:min-h-14 max-md:px-3 max-md:py-1">
-      <div className="mr-auto md:hidden">{moreMenu}</div>
-      <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
-        <span className="hidden truncate text-sm font-medium md:inline">{workspace.snapshot?.name ?? target.source?.name ?? "来源未确认"}</span>
-        <span className="hidden shrink-0 text-xs text-muted-foreground md:inline">{workspace.dirty ? "未保存" : workspace.savedPending ? "待应用" : "源配置"}</span>
-      </div>
-      <span className="hidden text-xs text-muted-foreground md:block">全部集合 · {workspace.itemsByCategory.proxy.length + workspace.itemsByCategory.rule.length}</span>
-      <div className="flex shrink-0 items-center gap-2" aria-label="配置及全部集合统一操作">
-        <Button variant="outline" size="lg" className="md:hidden" disabled={workspace.loading} onClick={() => void onRefresh()}>重载</Button>
-        <Button variant="outline" size="lg" disabled={workspace.writeDisabled || inputDirty} onClick={validate}><ShieldCheck className="hidden md:block" data-icon="inline-start" />校验</Button>
-        <Button variant="outline" size="lg" aria-label="保存配置" disabled={workspace.writeDisabled || inputDirty} onClick={() => void workspace.saveConfigDraft()}>{workspace.busy ? <Spinner data-icon="inline-start" /> : <Save className="hidden md:block" data-icon="inline-start" />}<span>保存<span className="hidden md:inline">配置</span></span></Button>
-        <Button size="lg" aria-label="应用配置" disabled={workspace.writeDisabled || inputDirty} onClick={applyConfig}><span>应用<span className="hidden md:inline">配置</span></span></Button>
-      </div>
-    </WorkspaceToolbar>
-  </>
-  const detailToolbar = <WorkspaceToolbar variant="editor" className="hidden md:flex">
-    {fileBack}<span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{activeName ?? "未选择集合"}</span>
-    {ordinary && active && <label className="flex shrink-0 items-center gap-1.5 text-xs"><Checkbox aria-label="只读" checked={readOnly} disabled={workspace.writeDisabled || workspace.contentDirty} onCheckedChange={checked => void workspace.setReadOnly(active, checked === true)} />只读</label>}
-    <Button variant="outline" size="lg" disabled={inputBlocked} onClick={() => setImportMode("new")}><Plus data-icon="inline-start" />新建</Button>
-    <Button variant="outline" size="icon-lg" aria-label="集合设置" disabled={!active?.declared || inputBlocked} onClick={openSettings}><Settings2 /></Button>{moreMenu}
+  const toolbar = <WorkspaceToolbar variant="resource-editor" className="max-md:min-h-14 max-md:px-2 max-md:py-1">
+    {view === "manage" && <Button variant="ghost" size="icon" aria-label="返回集合" disabled={workspace.busy || inputDirty} onClick={onBack}><ArrowLeft /></Button>}
+    <span className="min-w-0 flex-1 truncate text-sm font-medium">{view === "manage" ? "管理集合" : workspace.snapshot?.name ?? "来源未确认"}</span>
+    <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">{view === "manage" && workspace.snapshot?.name + " · "}{workspace.dirty ? "未保存" : workspace.savedPending ? "待应用" : workspace.snapshot ? "已保存" : "来源未确认"}</span>
+    {view === "collections" && <Button variant="outline" size="sm" className="max-sm:size-8 max-sm:p-0" aria-label="管理集合" disabled={workspace.busy || inputDirty} onClick={onOpenManagement}><FolderOpen data-icon="inline-start" /><span className="hidden sm:inline">管理集合</span></Button>}
+    <div className="flex shrink-0 items-center gap-2" aria-label="配置及全部集合统一操作">
+      <Button variant="outline" size="sm" disabled={workspace.writeDisabled || inputDirty} onClick={validate}><ShieldCheck className="hidden md:block" data-icon="inline-start" />校验</Button>
+      <Button variant="outline" size="sm" aria-label="保存配置" disabled={workspace.writeDisabled || inputDirty} onClick={() => void workspace.saveConfigDraft()}>{workspace.busy ? <Spinner data-icon="inline-start" /> : <Save className="hidden md:block" data-icon="inline-start" />}保存</Button>
+      <Button size="sm" aria-label="应用配置" disabled={workspace.writeDisabled || inputDirty} onClick={applyConfig}>应用</Button>
+    </div>
   </WorkspaceToolbar>
-  const categoryTabs = <WorkspaceCategoryTabs layout="list" value={category} onValueChange={value => onCategoryChange(value as ProviderCategory)} disabled={workspace.busy || inputDirty} items={[{ value: "proxy", label: "代理集合", icon: Boxes }, { value: "rule", label: "规则集合", icon: ListTree }]} />
+  const detailToolbar = <WorkspaceToolbar variant="editor">
+    <Button variant="ghost" size="icon" className="md:hidden" aria-label={navigation.returnView === "manage" ? "返回管理集合" : navigation.returnView === "config" ? "返回编辑配置" : "返回集合列表"} disabled={workspace.busy || inputDirty} onClick={onBack}><ArrowLeft /></Button>
+    {fileBack}<span className="min-w-0 flex-1 truncate text-sm">{activeName ?? "未选择集合"}</span>
+    {active && !ordinary && <Badge variant="outline">{collectionSourceLabel(active)} · 正文只读</Badge>}
+    <Button variant="outline" size="sm" aria-label="集合设置" disabled={!active?.declared || workspace.writeDisabled || inputDirty} onClick={openSettings}><Settings2 data-icon="inline-start" />设置</Button>{moreMenu}
+  </WorkspaceToolbar>
+  const categoryTabs = <WorkspaceCategoryTabs layout="list" listSpacing="comfortable" value={category} onValueChange={value => onCategoryChange(value as ProviderCategory)} disabled={workspace.busy || inputDirty} items={[{ value: "proxy", label: "代理集合", icon: Boxes }, { value: "rule", label: "规则集合", icon: ListTree }]} />
   return <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-    <div className="flex min-h-0 flex-1">
-      <ResourceWorkspace idPrefix="collection" resources={list()} resourcesHeader={categoryTabs} toolbar={toolbar}
+    {!importMode && toolbar}
+    {(workspace.configContentError || workspace.applyError) && <Alert variant="destructive" className="shrink-0 rounded-none"><AlertDescription>{workspace.configContentError ?? workspace.applyError}</AlertDescription></Alert>}
+    <div className={cn("min-h-0 flex-1", view === "collections" && !importMode ? "flex" : "hidden")}>
+      <ResourceWorkspace idPrefix="collection" resources={list()} resourcesHeader={categoryTabs}
         mobileResources={<div className="flex h-full min-h-0 flex-col">
-          <CollectionCategoryPicker category={category} count={entries.length} disabled={workspace.busy || inputDirty} actions={<CollectionActionsMenu groups={[[createAction, ...importActions]]} />} onChoose={onCategoryChange} />
+          <CollectionCategoryPicker category={category} count={entries.length} disabled={workspace.busy || inputDirty} actions={null} onChoose={onCategoryChange} />
           <div className="min-h-0 flex-1">{list(true)}</div>
         </div>}
         mobileNavigation={{ detailOpen: mobileEditing }}
         resizeHandleLabel="调整集合列表宽度">
         {() => <section className="@container/collection flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
             {detailToolbar}
+            {active && <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground"><span className="min-w-0 flex-1 truncate">{String(active.declaration?.path ?? active.referencePath ?? "内嵌于源配置")}</span><span className="shrink-0">{collectionSourceLabel(active)}</span></div>}
             {workspace.identityStatus !== "ready" && !(workspace.identityStatus === "loading" && workspace.snapshot) &&
               <Alert className="shrink-0 rounded-none"><AlertDescription className="flex flex-wrap items-center gap-2"><span>{workspace.message}</span>
                 {target.source && <Button variant="outline" size="sm" disabled={workspace.busy || inputDirty} onClick={() => void (async () => {
@@ -226,21 +191,13 @@ export function ManagedCollectionWorkspace({ category, workspace, runtime, notif
                 {workspace.contentRetryBlockedReason && <span>{workspace.contentRetryBlockedReason}</span>}
               </>}
             </AlertDescription></Alert>}
-            {workspace.configContentError && <Alert variant="destructive" className="shrink-0 rounded-none"><AlertDescription>{workspace.configContentError}</AlertDescription></Alert>}
-            {workspace.applyError && <Alert variant="destructive" className="shrink-0 rounded-none"><AlertDescription>{workspace.applyError}</AlertDescription></Alert>}
             {active ? <CollectionBodyWorkspace key={workspace.snapshot?.name + ":" + active.id} workspace={workspace} item={active} editable={editable} pickerOpen={filePickerId === active.id} onPickerChange={open => setFilePickerId(open ? active.id : null)} /> : <Empty className="min-h-0 flex-1"><EmptyHeader><EmptyTitle>{target.name && workspace.identityStatus === "ready" ? "指定集合不存在" : "未选择可读取的源集合"}</EmptyTitle><EmptyDescription>{target.name && workspace.identityStatus === "ready" ? "请在当前配置中重新选择集合。" : "来源未确认时保留可用的 Controller 更新操作。"}</EmptyDescription></EmptyHeader></Empty>}
           </section>}
       </ResourceWorkspace>
     </div>
-    {importMode && <ProxyCollectionImportDialog mode={importMode} category={category} onClose={() => setImportMode(null)} onStaged={() => setMobileEditing(true)} workspace={workspace} onDirtyChange={onInputDirtyChange} />}
+    <div className={cn("min-h-0 flex-1", view === "manage" && !importMode ? "flex" : "hidden")}><CollectionFileManager category={category} workspace={workspace} historyEntry={navigation.entry} visible={view === "manage" && !importMode} discardInputVersion={discardInputVersion} onCategoryChange={onCategoryChange} onOpenCollection={item => select(item.name, true)} onNew={() => setImportMode("new")} onCleanup={() => setCleanupOpen(true)} onDirtyChange={onInputDirtyChange} /></div>
+    {importMode && <CollectionCreateWorkspace mode={importMode} category={category} onClose={() => setImportMode(null)} workspace={workspace} onDirtyChange={onInputDirtyChange} />}
     {settingsTarget && <CollectionSettingsDialog item={settingsTarget.item} source={settingsTarget.source} workspace={workspace} onClose={() => setSettingsTarget(null)} onDirtyChange={onInputDirtyChange} />}
     {cleanupOpen && <CollectionCleanupDialog category={category} onClose={() => setCleanupOpen(false)} onDone={() => workspace.refresh(true, true)} onBusyChange={onInputDirtyChange} notify={notify} />}
-    <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => { if (!open && !workspace.busy) setDeleteTarget(null) }}><AlertDialogContent><AlertDialogHeader>
-      <AlertDialogTitle>删除集合 {deleteTarget?.name}？</AlertDialogTitle><AlertDialogDescription>配置：{workspace.snapshot?.name}。受影响代理组：{deleteTarget?.selectedGroups.join("、") || "无"}。{deleteTarget?.access === "inline" || deleteTarget?.access === "http" ? "移除集合声明和当前配置引用。" : "移除当前配置的集合声明和引用；成功应用后清理属于管理器且不再依赖的文件，其余文件保留。"}完成后使用“应用配置”加载变更。</AlertDialogDescription>
-    </AlertDialogHeader>
-      {emptiedGroups.length > 0 && <Alert variant="destructive"><AlertDescription>删除会使以下代理组失去所有来源：{emptiedGroups.join("、")}。保存允许保留草稿，应用前请补充这些组的来源。</AlertDescription></Alert>}
-      <AlertDialogFooter><AlertDialogCancel disabled={workspace.busy}>取消</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={workspace.writeDisabled || workspace.busy} onClick={() => {
-      const target = deleteTarget; setDeleteTarget(null); void workspace.remove(target)
-    }}>{workspace.busy && <Spinner data-icon="inline-start" />}删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </div>
 }

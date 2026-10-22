@@ -9,6 +9,7 @@ export type ProviderRuntimeDependencies = { content: string | null; uncertain: b
 export type ProviderRuntimeReferences = { references: ProviderPathReference[]; uncertain: boolean; unknownReason?: RuntimeUnknownReason; hasSuccessfulRecord?: boolean; scanComplete: boolean };
 
 export interface ProviderFileRecord {
+  httpCache?: boolean;
   fileName: string;
   referencePath: string;
   category: ProviderCategory | "unknown";

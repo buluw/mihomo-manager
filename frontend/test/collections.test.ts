@@ -1,5 +1,23 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { collectionFileRows, renamedCollectionFile, replaceCollectionFilePath } from "../src/features/providers/collectionFileManagement.ts"
+
+test("file management keeps one row per file and preserves unreferenced resources", () => {
+  const content = "proxy-providers:\n  first: {type: file, path: ./providers/nodes.yaml}\n  second: {type: file, path: ./providers/nodes.yaml}\nproxy-groups: []\n"
+  const snapshot = { name: "main.yaml", path: "/controlled/main.yaml", content, sha256: "v1" }
+  const file = { category: "proxy" as const, fileName: "nodes.yaml", referencePath: "./providers/nodes.yaml", source: "manual" as const, writable: true, sha256: "file", size: 1, updatedAt: "", filterSettings: null, extractionId: null }
+  const rows = collectionFileRows(snapshot, content, [file], [], "proxy", [], [], [])
+  assert.equal(rows.length, 1); assert.equal(rows[0]!.bindings.length, 2)
+  const renamed = renamedCollectionFile(rows[0]!, "renamed")
+  assert.equal(renamed.fileName, "renamed.yaml")
+  assert.equal((replaceCollectionFilePath(content, rows[0]!.bindings, renamed.referencePath).match(/renamed.yaml/g) ?? []).length, 2)
+  const detached = collectionFileRows(snapshot, "proxy-groups: []\n", [file], [], "proxy", [], [], [])
+  assert.equal(detached.length, 1); assert.equal(detached[0]!.bindings.length, 0); assert.equal(detached[0]!.savedBindings.length, 2)
+  assert.equal(collectionFileRows({ ...snapshot, content: "proxy-providers: [" }, content, [file], [], "proxy", [], [], []).length, 1)
+  const pending = { category: "proxy" as const, fileName: file.fileName, sha256: "file", identity: "proof", action: "keep" as const, reason: "referenced" as const, pendingConfigNames: [snapshot.name] }
+  assert.equal(collectionFileRows(snapshot, "proxy-groups: []\n", [file], [], "proxy", [], [pending], [], true)[0]!.deleting, true)
+  assert.equal(collectionFileRows(snapshot, "proxy-groups: []\n", [file], [], "proxy", [], [pending], [], false)[0]!.deleting, false)
+})
 
 import { ConfigError, type ManagedProviderFileSnapshot, type ProviderCleanupItem } from "../src/api/configClient.ts"
 import { cleanupPresentation, cleanupSelectionHint } from "../src/shared/collectionCleanup.ts"

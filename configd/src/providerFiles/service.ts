@@ -18,7 +18,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { isMap, isSeq, parse, parseDocument, stringify } from "yaml";
 import type { ConfigSnapshot, ConfigStore } from "../config/store.js";
 import { ConfigConflictError, ConfigProviderFilesError, ConfigValidationError } from "../config/errors.js";
-import { saveWorkspace, recoverWorkspace, parseWorkspaceJournal, type WorkspaceJournal, type WorkspaceOperationContext, type CollectionBodyDraft, type CollectionRemoval, type PendingCollectionRemoval } from "./workspaceOperation.js";
+import { saveWorkspace, recoverWorkspace, parseWorkspaceJournal, type WorkspaceJournal, type WorkspaceOperationContext, type CollectionBodyDraft, type CollectionFileDraft, type CollectionRemoval, type PendingCollectionRemoval } from "./workspaceOperation.js";
 import { resolveCollectionPaths, mappedCollectionContent, controlledPathStatus } from "./collectionPaths.js";
 import { collectionScope, COLLECTION_SCOPE, validProviderKey, providerFileKeys, ensureProviderParent } from "./controlledFiles.js";
 import type { PublicSubscription } from "../subscriptions/types.js";
@@ -78,6 +78,7 @@ export interface ProviderCleanupItem {
   configNames?: string[];
   configReferences?: ProviderConfigReference[];
   runtime?: ProviderRuntimeReferences;
+  pendingConfigNames?: string[];
 }
 
 export type ProviderTemplateSettings = {
@@ -89,8 +90,6 @@ export type ProviderTemplateSettings = {
 };
 
 export type CollectionPreferences = { version: number; readOnly: string[] };
-export const collectionPreferenceKey = (configName: string, category: ProviderCategory, name: string) =>
-  JSON.stringify([configName, category, name]);
 
 const DEFAULT_PROVIDER_TEMPLATES: ProviderTemplateSettings = {
   version: 0,
@@ -175,11 +174,12 @@ export class ProviderFileService {
       const originalPath = this.pathForName(originalKey, item.category);
       const maintained = (this.state.httpCachePaths ?? []).includes(originalPath) || (item.category === "proxy" &&
         (subscriptionReservations(this.options.subscriptions?.() ?? [], originalKey).length || localReservations(this.state.local, originalKey).length));
-      if (!maintained) continue;
+      const explicitManual = item.sourcePath.replace(/^\.\//, "").includes("/") && this.state.manual.some(entry => entry.category === item.category && entry.fileName === originalKey);
+      if (!maintained && !explicitManual) continue;
       item.fileName = originalKey;
       item.referencePath = `./${relative(this.options.dataDir, originalPath).split(sep).join("/")}`;
       item.status = await controlledPathStatus(this.directoryFor(item.category), originalPath);
-      item.writable = false;
+      item.writable = !maintained;
     }
     return paths;
   }
@@ -547,29 +547,6 @@ export class ProviderFileService {
     return structuredClone(this.state.collectionPreferences ?? { version: 0, readOnly: [] });
   }
 
-  setCollectionReadOnly(input: { configName: string; category: ProviderCategory; name: string; readOnly: boolean; expectedVersion: number }) {
-    return this.writeQueue.enqueue(async () => {
-      await this.ensureProviderOperationRecovered();
-      const current = this.collectionPreferences();
-      if (current.version !== input.expectedVersion) throw new ProviderFileConflictError("collection preferences changed");
-      const config = recordValue(parse((await this.options.store.read(input.configName)).content));
-      const declaration = recordValue(recordValue(config?.[`${input.category}-providers`])?.[input.name]);
-      if (!declaration) throw new ProviderFileNotFoundError("collection not found");
-      if (declaration.type !== "inline") {
-        const fileName = await this.mappedFileName(input.configName, input.category, declaration.path);
-        if (declaration.type !== "file" || !fileName) throw new ProviderFileReadOnlyError("collection body is read-only");
-        await this.assertWritable(input.category, fileName);
-      }
-      const key = collectionPreferenceKey(input.configName, input.category, input.name);
-      const readOnly = current.readOnly.filter((entry) => entry !== key);
-      if (input.readOnly) readOnly.push(key);
-      const next = { ...this.state, collectionPreferences: { version: current.version + 1, readOnly } };
-      await this.writeState(next);
-      this.state = next;
-      return this.collectionPreferences();
-    });
-  }
-
   private collectionFileName(path: unknown, category: ProviderCategory) {
     if (typeof path !== "string" || path.split(/[\\/]/).includes("..")) return null;
     const fileName = relative(this.directoryFor(category), resolve(this.options.dataDir, path)).split(sep).join("/");
@@ -649,7 +626,7 @@ export class ProviderFileService {
     };
   }
 
-  saveCollectionWorkspace(input: { configName: string; content: string; expectedSha256: string; bodies: CollectionBodyDraft[]; removals: Array<{ category: ProviderCategory; name: string }>; httpProviders?: Array<{ category: ProviderCategory; name: string }> | undefined }) {
+  saveCollectionWorkspace(input: { configName: string; content: string; expectedSha256: string; bodies: CollectionBodyDraft[]; removals: Array<{ category: ProviderCategory; name: string }>; httpProviders?: Array<{ category: ProviderCategory; name: string }> | undefined; fileDrafts?: CollectionFileDraft[] | undefined; cleanupFiles?: Pick<ProviderCleanupItem, "category" | "fileName" | "sha256" | "identity">[] | undefined }) {
     return this.writeQueue.enqueue(async () => {
       await this.ensureProviderOperationRecovered();
       const previous = await this.options.store.read(input.configName);
@@ -658,7 +635,8 @@ export class ProviderFileService {
       const contentForPaths = after ? input.content : previous.content;
       const references = await rememberHttpCachePaths(this.httpContext());
       const paths = await this.resolvePaths(previous.name, contentForPaths);
-      const bodies: Array<CollectionBodyDraft & { fileName: string }> = [];
+      const previousPaths = await this.resolvePaths(previous.name, previous.content);
+      const bodies: CollectionFileDraft[] = [];
       const seen = new Set<string>();
       for (const body of input.bodies) {
         const path = paths.find((entry) => entry.category === body.category && entry.name === body.name);
@@ -668,8 +646,7 @@ export class ProviderFileService {
         seen.add(key);
         if (Buffer.byteLength(body.content, "utf8") > this.options.maxContentBytes) throw new ProviderFileValidationError("provider content exceeds the size limit");
         const target = this.pathForName(path.fileName, body.category);
-        if (this.collectionPreferences().readOnly.includes(collectionPreferenceKey(previous.name, body.category, body.name)) ||
-          (this.state.httpCachePaths ?? []).includes(target) || references.get(target) === null ||
+        if ((this.state.httpCachePaths ?? []).includes(target) || references.get(target) === null ||
           (body.category === "proxy" && (subscriptionReservations(this.options.subscriptions?.() ?? [], path.fileName).length || localReservations(this.state.local, path.fileName).length))) throw new ProviderFileReadOnlyError("provider body is read-only");
         const existing = await readControlledFile(target, this.options.maxContentBytes);
         if ((existing?.sha256 ?? null) !== body.expectedSha256) throw new ProviderFileConflictError("provider file changed");
@@ -678,7 +655,32 @@ export class ProviderFileService {
         bodies.push({ ...body, fileName: path.fileName });
       }
       const removals: CollectionRemoval[] = [];
-      const previousPaths = await this.resolvePaths(previous.name, previous.content);
+      for (const draft of input.fileDrafts ?? []) {
+        const target = this.pathForName(draft.fileName, draft.category);
+        const key = `${draft.category}:${providerFileNameKey(draft.fileName)}`;
+        if (seen.has(key)) throw new ProviderFileConflictError("duplicate collection file draft");
+        seen.add(key);
+        if (Buffer.byteLength(draft.content, "utf8") > this.options.maxContentBytes) throw new ProviderFileValidationError("provider content exceeds the size limit");
+        if ((this.state.httpCachePaths ?? []).includes(target) || references.get(target) === null ||
+          (draft.category === "proxy" && (subscriptionReservations(this.options.subscriptions?.() ?? [], draft.fileName).length || localReservations(this.state.local, draft.fileName).length))) throw new ProviderFileReadOnlyError("provider body is read-only");
+        const existing = await readControlledFile(target, this.options.maxContentBytes);
+        if ((existing?.sha256 ?? null) !== draft.expectedSha256 || (draft.renameFrom && existing)) throw new ProviderFileConflictError("provider file changed");
+        if (existing) await this.assertWritable(draft.category, draft.fileName);
+        if (draft.renameFrom) {
+          await this.assertWritable(draft.category, draft.renameFrom.fileName);
+          const original = await readControlledFile(this.pathForName(draft.renameFrom.fileName, draft.category), this.options.maxContentBytes);
+          if (!original || original.sha256 !== draft.renameFrom.expectedSha256) throw new ProviderFileConflictError("rename source changed");
+          removals.push({ category: draft.category, name: draft.name, fileName: draft.renameFrom.fileName, sha256: original.sha256, identity: `${original.device}:${original.inode}` });
+        }
+        await ensureProviderParent(this.directoryFor(draft.category), draft.fileName);
+        bodies.push(draft);
+      }
+      for (const requested of input.cleanupFiles ?? []) {
+        const file = await readControlledFile(this.pathForName(requested.fileName, requested.category), this.options.maxContentBytes);
+        const current = await this.cleanupItem(requested.category, requested.fileName, undefined, references);
+        if (!file || file.sha256 !== requested.sha256 || current.identity !== requested.identity) throw new ProviderFileConflictError("cleanup file changed");
+        if (!removals.some((entry) => entry.category === requested.category && entry.fileName === requested.fileName)) removals.push({ ...requested, name: requested.fileName, identity: `${file.device}:${file.inode}` });
+      }
       if (input.removals.length && !after) throw new ProviderFileValidationError("collection removal requires readable declarations");
       const requestedRemovals = [...input.removals.map((entry) => ({ ...entry, explicit: true })),
         ...input.bodies.map((entry) => ({ category: entry.category, name: entry.name, explicit: false }))];
@@ -735,10 +737,6 @@ export class ProviderFileService {
       local: before.local.map((entry) => entry.configName === oldName ? { ...entry, configName: newName } : entry),
       pendingRemovals: before.pendingRemovals?.map((entry) => entry.configName === oldName ? { ...entry, configName: newName } : entry),
       collectionPathChanges: before.collectionPathChanges?.map((entry) => entry.configName === oldName ? { ...entry, configName: newName } : entry),
-      collectionPreferences: before.collectionPreferences ? { ...before.collectionPreferences, readOnly: before.collectionPreferences.readOnly.map((key) => {
-        try { const parts = JSON.parse(key); if (parts[0] === oldName) { parts[0] = newName; return JSON.stringify(parts); } } catch { /* Preserve unrelated preference keys. */ }
-        return key;
-      }) } : undefined,
     };
     await this.writeState(next); this.state = next;
     try { return await renameSource(); }
@@ -933,12 +931,7 @@ export class ProviderFileService {
       } else {
         config = await this.options.store.saveFileUnqueued(previous.name, content, previous.sha256, true);
       }
-      const preferences = this.collectionPreferences();
-      const oldKey = collectionPreferenceKey(input.configName, input.category, input.name);
-      const nextKey = collectionPreferenceKey(input.configName, input.category, nextName);
       const next = { ...this.state,
-        collectionPreferences: oldKey === nextKey ? preferences : { version: preferences.version + 1,
-          readOnly: preferences.readOnly.map((key) => key === oldKey ? nextKey : key) },
         manualHttp: (this.state.manualHttp ?? []).map((owner) => owner.configName === input.configName && owner.category === input.category && owner.name === input.name
           ? { ...owner, name: nextName, declaration } : owner),
       };
@@ -1050,9 +1043,6 @@ export class ProviderFileService {
           this.collectionFileName(existing.path, category) !== input.targetFileName) {
           throw new ProviderFileConflictError("replacement target changed");
         }
-        if (this.collectionPreferences().readOnly.includes(collectionPreferenceKey(input.configName, category, input.name))) {
-          throw new ProviderFileReadOnlyError("collection body is read-only");
-        }
         if (category === "rule" && existing.format !== undefined && existing.format !== "yaml") {
           throw new ProviderFileValidationError("YAML upload cannot replace another format");
         }
@@ -1115,8 +1105,7 @@ export class ProviderFileService {
         const previousFileName = this.collectionFileName(existing.path, category);
         const previousPath = typeof existing.path === "string" ? resolve(this.options.dataDir, existing.path) : "";
         if ((this.state.httpCachePaths ?? []).includes(previousPath) || (category === "proxy" && previousFileName &&
-          (subscriptionReservations(this.options.subscriptions?.() ?? [], previousFileName).length || localReservations(this.state.local, previousFileName).length)) ||
-          this.collectionPreferences().readOnly.includes(collectionPreferenceKey(input.configName, category, input.name))) {
+          (subscriptionReservations(this.options.subscriptions?.() ?? [], previousFileName).length || localReservations(this.state.local, previousFileName).length))) {
           throw new ProviderFileReadOnlyError("collection body is read-only");
         }
         if (category === "rule" && existing.format !== undefined && existing.format !== "yaml") {
@@ -1499,6 +1488,8 @@ export class ProviderFileService {
     references?: Map<string, Set<ProviderCategory> | null>, selected = false,
     configSources?: Map<string, ConfigReferenceSource>): Promise<ProviderCleanupItem> {
     const item: ProviderCleanupItem = { category, fileName, sha256: "", identity: "", action: "keep", reason: "unreadable" };
+    const pending = (this.state.pendingRemovals ?? []).filter(entry => entry.category === category && entry.fileName === fileName).map(entry => entry.configName);
+    if (pending.length) item.pendingConfigNames = [...new Set(pending)];
     try {
       const file = await this.record(fileName, category, references);
       const proof = await readControlledFile(this.pathForName(fileName, category), this.options.maxContentBytes);
@@ -1895,6 +1886,7 @@ export class ProviderFileService {
         category,
         source,
         writable: category !== "unknown" && ordinaryWritable,
+        ...(this.isHttpCache(requestedCategory, fileName) ? { httpCache: true } : {}),
         sha256: hash(content),
         size: metadata.size,
         updatedAt: metadata.mtime.toISOString(),

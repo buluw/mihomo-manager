@@ -5,7 +5,12 @@ import type { ProviderCategory } from "./collectionViewModel.ts"
 
 export type ManagedProviderAccess = "inline" | "manual" | "subscription" | "local" | "external" | "http"
 
+export function managedProviderBodyWritable(item: Pick<ManagedProviderItem, "access" | "writable" | "httpCache">) {
+  return item.writable && !item.httpCache && ["inline", "manual", "external"].includes(item.access)
+}
+
 export type ManagedProviderItem = {
+  httpCache?: boolean
   id: string
   category: ProviderCategory
   name: string
@@ -209,7 +214,7 @@ export function managedProviderItems(
       ?? snapshot.collectionPaths?.find((entry) => entry.category === category && entry.sourcePath === declaration.path)
     const path = normalizedReference(mapping?.referencePath ?? declaration.path)
     const issue = mapping?.status ?? snapshot.providerIssues?.find((entry) => entry.category === category && entry.name === name)?.status
-    const file = path && (snapshot.collectionPaths === undefined || mapping || /(?:^|\/)config-[a-f0-9]{24}\//.test(path))
+    const file = path
       ? files.find((candidate) =>
         candidate.category !== "unknown" &&
         normalizedReference(candidate.referencePath) === path)
@@ -236,6 +241,7 @@ export function managedProviderItems(
       fileName: file?.fileName ?? mapping?.fileName ?? null,
       referencePath: file?.referencePath ?? (path ? `./${path}` : null),
       access,
+      httpCache: file?.httpCache,
       writable: access === "inline" || (access !== "http" && mapping?.writable !== false && (Boolean(file?.writable) || newFile)) || (access === "http" && manualHttpNames.has(name)),
       declared: true,
       declaration,
@@ -279,6 +285,7 @@ export function managedProviderItems(
       fileName: file.fileName,
       referencePath: file.referencePath,
       access: file.source,
+      httpCache: file.httpCache,
       writable: file.writable,
       declared: false,
       declaration: null,

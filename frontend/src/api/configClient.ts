@@ -213,6 +213,7 @@ export interface ManagedHttpProviderOwner {
 }
 
 export interface ManagedProviderFile {
+  httpCache?: boolean;
   fileName: string;
   referencePath: string;
   category: "proxy" | "rule" | "unknown";
@@ -457,8 +458,10 @@ export function saveConfigFile(name: string, content: string, expectedSha256: st
   );
 }
 
+export type CollectionFileDraft = { category: CollectionCategory; name: string; fileName: string; content: string; expectedSha256: string | null; renameFrom?: { fileName: string; expectedSha256: string } };
 export function saveCollectionWorkspace(name: string, input: { content: string; expectedSha256: string;
   bodies: Array<{ category: CollectionCategory; name: string; content: string; expectedSha256: string | null }>;
+  fileDrafts?: CollectionFileDraft[]; cleanupFiles?: Pick<ProviderCleanupItem, "category" | "fileName" | "sha256" | "identity">[];
   removals: Array<{ category: CollectionCategory; name: string }>; httpProviders?: Array<{ category: CollectionCategory; name: string }> }) {
   return configApi<ConfigSnapshot>(`/files/${encodeURIComponent(name)}/collections`, { method: "PUT", body: JSON.stringify(input) }, LONG_OPERATION_TIMEOUT_MS);
 }
@@ -474,6 +477,7 @@ export interface ProviderCleanupItem {
   configNames?: string[];
   configReferences?: ProviderConfigReference[];
   runtime?: ProviderRuntimeReferences;
+  pendingConfigNames?: string[];
 }
 export interface ProviderCleanupResult { files: ProviderCleanupItem[] }
 
@@ -531,16 +535,6 @@ export function readProviderDeclaration(category: "proxy" | "rule", name: string
 
 export function readProviderPayload(category: "proxy" | "rule", name: string, signal?: AbortSignal, source?: Pick<ConfigSnapshot, "name" | "sha256">) {
   return readProviderText("provider-files", category, name, signal, source);
-}
-
-export type CollectionPreferences = { version: number; readOnly: string[] };
-
-export function readCollectionPreferences(signal?: AbortSignal) {
-  return configApi<CollectionPreferences>("/collection-preferences", { signal });
-}
-
-export function saveCollectionReadOnly(input: { configName: string; category: "proxy" | "rule"; name: string; readOnly: boolean; expectedVersion: number }) {
-  return configApi<CollectionPreferences>("/collection-preferences", { method: "PUT", body: JSON.stringify(input) });
 }
 
 export function saveCollectionSettings(input: { configName: string; expectedConfigSha256: string;

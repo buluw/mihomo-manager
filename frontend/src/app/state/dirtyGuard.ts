@@ -3,6 +3,8 @@ import { collectionNavigationState, isConfigRenameNavigation, type NavigationLoc
 export type DirtyGuardState = {
   dirty: boolean;
   pendingWrite: boolean;
+  localDirty?: boolean;
+  onDiscardLocal?: () => void;
 };
 
 export type NavigationBlockReason = "pending-write" | "dirty";
@@ -10,9 +12,10 @@ export type NavigationBlockReason = "pending-write" | "dirty";
 export function navigationBlockReason({
   dirty,
   pendingWrite,
+  localDirty,
 }: DirtyGuardState): NavigationBlockReason | null {
   if (pendingWrite) return "pending-write";
-  return dirty ? "dirty" : null;
+  return dirty || localDirty ? "dirty" : null;
 }
 
 export function shouldBlockNavigation(
@@ -34,7 +37,12 @@ export function shouldBlockNavigation(
     // Version commits and collection selection stay within the same draft owner.
     return JSON.stringify([current.pathname, collectionNavigationState(current).collectionTarget.source ?? ""]);
   };
-  if (!guard.pendingWrite && (location(nextPath).pathname === "/runtime-config" ||
+  if (!guard.pendingWrite && !guard.localDirty && (location(nextPath).pathname === "/runtime-config" ||
     (location(currentPath).pathname === "/runtime-config" && runtimeReturnPath && identity(nextPath) === identity(runtimeReturnPath)))) return false;
-  return identity(currentPath) !== identity(nextPath) && navigationBlockReason(guard) !== null;
+  if (identity(currentPath) !== identity(nextPath)) return navigationBlockReason(guard) !== null;
+  if (location(currentPath).pathname !== "/collections" || (action !== "PUSH" && action !== "POP")) return false;
+  const current = collectionNavigationState(location(currentPath)).collectionTarget;
+  const next = collectionNavigationState(location(nextPath)).collectionTarget;
+  const moving = action === "POP" || ["view", "entry", "category", "collection"].some(key => current[key] !== next[key]);
+  return moving && Boolean(guard.pendingWrite || guard.localDirty);
 }

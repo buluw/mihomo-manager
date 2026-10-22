@@ -6,6 +6,7 @@ import type { ProviderCategory } from "./collectionYaml.js";
 import type { ManagedHttpProviderRecord } from "./types.js";
 
 export type CollectionBodyDraft = { category: ProviderCategory; name: string; content: string; expectedSha256: string | null };
+export type CollectionFileDraft = CollectionBodyDraft & { fileName: string; renameFrom?: { fileName: string; expectedSha256: string } };
 export type CollectionRemoval = { category: ProviderCategory; name: string; fileName: string; sha256: string; identity: string };
 type FileProof = { sha256: string; device: string; inode: string };
 type WorkspaceFile = { category: ProviderCategory; fileName: string; stage: string; backup: string | null; before: FileProof | null; after: FileProof };
@@ -86,7 +87,7 @@ export async function recoverWorkspace(context: WorkspaceOperationContext) {
 }
 
 export async function saveWorkspace(context: WorkspaceOperationContext, source: ConfigSnapshot, content: string,
-  bodies: Array<CollectionBodyDraft & { fileName: string }>, removals: CollectionRemoval[], httpProviders?: ManagedHttpProviderRecord[]) {
+  bodies: CollectionFileDraft[], removals: CollectionRemoval[], httpProviders?: ManagedHttpProviderRecord[]) {
   const files: WorkspaceFile[] = [];
   let durable = false;
   let journal: WorkspaceJournal = { version: 1, configName: source.name, beforeSha256: source.sha256, afterSha256: hash(content), phase: "prepared", files, removals, ...(httpProviders ? { httpProviders } : {}) };
@@ -103,10 +104,12 @@ export async function saveWorkspace(context: WorkspaceOperationContext, source: 
       if (!after) throw new ProviderFileConflictError("provider stage unavailable");
       const file: WorkspaceFile = { category: body.category, fileName: body.fileName, stage, backup: before ? hiddenFileName("workspace") : null, before: before ? proof(before) : null, after: proof(after) };
       files.push(file);
-      if (before && file.backup) {
-        const metadata = await lstat(path);
+      if (before || body.renameFrom) {
+        const metadata = await lstat(body.renameFrom ? providerFilePath(root, body.renameFrom.fileName) : path);
         await chmod(stagePath, metadata.mode);
         if (process.platform !== "win32") await chown(stagePath, metadata.uid, metadata.gid);
+      }
+      if (before && file.backup) {
         await link(path, hiddenProviderPath(root, file.backup));
         const backup = await readControlledFile(hiddenProviderPath(root, file.backup), context.maxContentBytes);
         if (!backup || !sameFileIdentity(before, backup) || backup.sha256 !== before.sha256) throw new ProviderFileConflictError("provider file changed");

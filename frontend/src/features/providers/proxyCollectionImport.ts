@@ -1,8 +1,11 @@
 import { proxyCollectionCount, ruleCollectionCount } from "../../shared/collectionContent.ts"
 import { isMap, isSeq, parseDocument, stringify } from "yaml"
 import { addHttpProviderConfig } from "./managedProviderYaml.ts"
-import { type ManagedProviderItem } from "./managedProviderModel.ts"
+import { managedProviderBodyWritable, type ManagedProviderItem } from "./managedProviderModel.ts"
 import type { CollectionCategory, ProxyCollectionInput } from "../../api/configClient.ts"
+import { stageCollectionGroups } from "./collectionGroupDraft.ts"
+
+export type CollectionDraftInput = ProxyCollectionInput & { newGroupNames?: string[] }
 
 export function readUploadDeclaration(snippet: string, category: CollectionCategory) {
   const document = parseDocument(snippet)
@@ -28,18 +31,19 @@ export function patchUploadDeclaration(snippet: string, category: CollectionCate
   return stringify({ [patch.name ?? name]: { ...declaration, ...(category === "rule" && patch.behavior ? { behavior: patch.behavior } : {}) } }, { lineWidth: 0 })
 }
 
-export function createCollectionDraft(content: string, input: ProxyCollectionInput, type: "inline" | "file" | "http", url: string, category: CollectionCategory = "proxy", filePath?: string, fileDeclaration?: Record<string, unknown>) {
+export function createCollectionDraft(content: string, input: CollectionDraftInput, type: "inline" | "file" | "http", url: string, category: CollectionCategory = "proxy", filePath?: string, fileDeclaration?: Record<string, unknown>) {
   const name = input.name.trim()
+  const legacyGroup = input.newGroupName?.trim()
+  const selectedGroups = legacyGroup ? [...new Set([...input.groupNames, legacyGroup])] : input.groupNames
+  if (category === "proxy") content = stageCollectionGroups(content, [...(input.newGroupNames ?? []), ...(legacyGroup ? [legacyGroup] : [])], selectedGroups, name)
   const source = parseDocument(content)
   if (source.errors.length || !isMap(source.contents)) throw new Error("当前配置 YAML 无效")
   const sectionName = category === "proxy" ? "proxy-providers" : "rule-providers"
   if (!name || name.length > 120 || (category === "rule" && name.includes(",")) || source.hasIn([sectionName, name])) throw new Error("集合名称无效或已存在")
   const available = proxyCollectionGroups(content)
   if (category === "proxy" && available.some((group) => group.name === name)) throw new Error("集合名与代理组名称冲突")
-  if (input.groupNames.some((group) => !available.some((item) => item.name === group))) throw new Error("所选代理组已不存在")
-  const newGroup = input.newGroupName?.trim()
-  if (category === "proxy" && newGroup && (newGroup.length > 120 || newGroup === name || available.some((group) => group.name === newGroup) || source.hasIn(["proxy-providers", newGroup]))) throw new Error("新代理组名称已存在或无效")
-  if (category === "proxy" && !input.groupNames.length && !newGroup && !available.some((group) => group.implicit)) throw new Error("至少选择一个代理组或填写新组名称")
+  if (selectedGroups.some((group) => !available.some((item) => item.name === group))) throw new Error("所选代理组已不存在")
+  if (category === "proxy" && !selectedGroups.length && !available.some((group) => group.implicit)) throw new Error("至少选择一个代理组")
   let declaration: Record<string, unknown>
   if (type === "inline") {
     if (category === "proxy") {
@@ -61,6 +65,7 @@ export function createCollectionDraft(content: string, input: ProxyCollectionInp
     const interval = input.interval ?? 0
     if (!Number.isSafeInteger(interval) || interval < 0) throw new Error("更新周期无效")
     declaration.interval = interval
+    if (filePath) declaration.path = filePath
   }
   source.setIn([sectionName, name], declaration)
   if (category === "proxy") {
@@ -68,12 +73,11 @@ export function createCollectionDraft(content: string, input: ProxyCollectionInp
     const groups = source.get("proxy-groups", true)
     if (!isSeq(groups)) throw new Error("代理组结构无效")
     for (const group of groups.items) {
-      if (!isMap(group) || !input.groupNames.includes(String(group.get("name")))) continue
+      if (!isMap(group) || !selectedGroups.includes(String(group.get("name")))) continue
       if (group.get("include-all") === true || group.get("include-all-providers") === true) continue
       const use = group.get("use", true)
       group.set("use", [...new Set([...(isSeq(use) ? use.toJSON() as string[] : []), name])])
     }
-    if (newGroup) groups.add({ name: newGroup, type: "select", use: [name] })
   } else {
     if (!["classical", "domain", "ipcidr"].includes(input.behavior ?? "classical")) throw new Error("规则类型无效")
     const policies = new Set(["DIRECT", ...available.map((group) => group.name)])
@@ -93,6 +97,10 @@ export function createCollectionDraft(content: string, input: ProxyCollectionInp
   return { name, declaration, content: source.toString({ lineWidth: 0 }) }
 }
 
+export function collectionShouldReference(content: string, input: ProxyCollectionInput, category: CollectionCategory) {
+  return category === "proxy" ? Boolean(input.groupNames.length || input.newGroupName?.trim() || proxyCollectionGroups(content).some(group => group.implicit)) : Boolean(input.ruleSetRules?.length)
+}
+
 export function proxyCollectionGroups(content: string): Array<{ name: string; implicit: boolean }> {
   const document = parseDocument(content)
   if (document.errors.length) return []
@@ -103,7 +111,7 @@ export function proxyCollectionGroups(content: string): Array<{ name: string; im
 
 export function collectionUploadTargets(items: ManagedProviderItem[], category: CollectionCategory) {
   return items.filter((item) => item.category === category && item.declared && item.declaration?.type === "file" &&
-    (item.access === "manual" || item.access === "external") &&
+    managedProviderBodyWritable(item) &&
     (category !== "rule" || item.declaration.format === undefined || item.declaration.format === "yaml") &&
     (item.fileIssue === "missing" || (!item.fileIssue && item.writable && Boolean(item.fileName && item.sha256))))
 }
